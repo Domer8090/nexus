@@ -172,6 +172,10 @@ export type Session = {
   triedAgents?: string[];
   /** Shown above the output, e.g. when Nexus handed the step to another agent. */
   notice?: string | null;
+  /** Usage limit hit: Nexus runs this step again at this time, when the agent's limit resets. */
+  retryAt?: string | null;
+  /** Images attached to the request (absolute paths under Nexus's own data folder). */
+  attachments?: string[];
   permissions: PermissionSet;
   conciseMode: ConciseMode;
   skills: string[];

@@ -14,6 +14,8 @@ export type LaunchInput = {
   resumeNativeId?: string | null;
   /** Extra read-only context, e.g. a diff for a review role. */
   context?: string;
+  /** Image files attached to the request. */
+  attachments?: string[];
 };
 
 export type EventSink = {

@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { bad, body } from "@/lib/api";
 import { audit } from "@/runtime/audit";
-import { cancel, getSession, listSessions, markReview, reassign, retry, revise } from "@/runtime/sessions";
+import { cancel, getSession, listSessions, markReview, reassign, retry, revise, setResetWait } from "@/runtime/sessions";
 import { applyToProject, getProject, removeWorktree } from "@/runtime/workspace";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("cancel") }),
   z.object({ action: z.literal("retry") }),
+  z.object({ action: z.literal("wait-reset"), wait: z.boolean() }),
   z.object({ action: z.literal("reassign"), agentId: z.string().min(1).max(64), model: z.string().max(120).nullable().optional() }),
   z.object({ action: z.literal("revise"), feedback: z.string().trim().min(1, "Say what to change.").max(8000) }),
   z.object({ action: z.literal("apply"), confirm: z.literal(true) }),
@@ -27,6 +28,14 @@ export async function POST(req: Request, ctx: RouteContext<"/api/sessions/[id]/a
   if (a.action === "retry") {
     if (!["failed", "cancelled"].includes(s.status)) return bad("Only failed or stopped sessions can be retried.");
     return Response.json({ session: retry(id) });
+  }
+  if (a.action === "wait-reset") {
+    if (s.status !== "failed") return bad("Only a failed step can wait for a limit reset.");
+    try {
+      return Response.json({ session: setResetWait(id, a.wait) });
+    } catch (e) {
+      return bad((e as Error).message);
+    }
   }
   if (a.action === "reassign") {
     try {

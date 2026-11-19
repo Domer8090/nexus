@@ -10,6 +10,7 @@ import { bestModel } from "@/lib/model-pick";
 import { startPowerWatch, waitForNetwork } from "./power";
 import { MAP_FILE, MAP_INSTRUCTION, buildMap, writeMap } from "./project-map";
 import { canHandOff, classifyFailure } from "@/lib/failure";
+import { parseReset } from "@/lib/limit-reset";
 import type { RunningHandle } from "./agents/types";
 import { createWorktree, diff, getProject, isRepo } from "./workspace";
 import type { AgentEvent, AgentEventKind, ConciseMode, PermissionSet, PresetId, Session, SessionRole, Workflow } from "@/lib/types";
@@ -123,6 +124,8 @@ export function listEvents(sessionId: string, afterId = 0): AgentEvent[] {
 function recover() {
   if (state.recovered) return;
   state.recovered = true;
+  const timer = setInterval(runDueResets, 20_000);
+  timer.unref?.();
   const rows = getDb().prepare("SELECT data FROM sessions").all() as { data: string }[];
   for (const r of rows) {
     const s = JSON.parse(r.data) as Session;
@@ -133,6 +136,27 @@ function recover() {
       getDb().prepare("UPDATE sessions SET data = ? WHERE id = ?").run(JSON.stringify(s), s.id);
     }
   }
+}
+
+/** Steps waiting for a usage limit to reset run again once their time has come. */
+function runDueResets() {
+  const now = Date.now();
+  for (const s of listSessions({ limit: 500 })) {
+    if (s.retryAt && s.status === "failed" && Date.parse(s.retryAt) <= now) {
+      addEvent(s.id, "system", "The usage limit has reset. Running this step again.");
+      retry(s.id);
+    }
+  }
+}
+
+/** Stops waiting for a limit reset, or waits again for the reset time the agent reported. */
+export function setResetWait(sessionId: string, wait: boolean): Session {
+  const s = getSession(sessionId);
+  if (!s) throw new Error("Session not found.");
+  if (!wait) return update(sessionId, { retryAt: null, notice: "Nexus won't run this step again by itself." })!;
+  const at = parseReset(s.error);
+  if (!at) throw new Error("The agent did not say when its limit resets.");
+  return update(sessionId, { retryAt: new Date(at).toISOString(), notice: `Runs again at ${new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, when the usage limit resets.` })!;
 }
 
 // ---------- workflows ----------
@@ -183,6 +207,7 @@ export async function createWorkflow(input: {
   skills: string[];
   concise: ConciseMode;
   permissions: PermissionSet;
+  attachments?: string[];
 }): Promise<{ workflow: Workflow; sessions: Session[] }> {
   const project = getProject(input.projectId);
   if (!project) throw new Error("Project not found.");
@@ -223,6 +248,7 @@ export async function createWorkflow(input: {
       permissions: readOnlyRole(t.role, t.agentId) ? { ...input.permissions, editFiles: false, isolate: false, runShell: false } : { ...input.permissions },
       conciseMode: input.concise,
       skills: input.skills,
+      attachments: input.attachments ?? [],
       model: t.model ?? null,
       command: [],
       usage: null,
@@ -272,7 +298,7 @@ export function revise(sessionId: string, feedback: string): Session {
 }
 
 export function retry(sessionId: string): Session {
-  const s = update(sessionId, { status: "queued", error: null, summary: null, usage: null, startedAt: null, endedAt: null, notice: null });
+  const s = update(sessionId, { status: "queued", error: null, summary: null, usage: null, startedAt: null, endedAt: null, notice: null, retryAt: null });
   if (!s) throw new Error("Session not found.");
   addEvent(s.id, "system", "Retry requested.");
   state.queue.push(s.id);
@@ -563,6 +589,7 @@ async function start(s0: Session) {
         skills: s.skills,
         resumeNativeId: parent?.nativeSessionId ?? null,
         context: ctx,
+        attachments: s.attachments,
       },
       {
         emit: (kind, text, data) => addEvent(sid, kind, text, data),
@@ -588,12 +615,15 @@ async function start(s0: Session) {
     return;
   }
   const netDrop = !result.ok && !cancelled && classifyFailure(result.error) === "network";
+  // Usage limit and no other agent free: wait for the reset time the agent itself reported.
+  const resetAt = !result.ok && !cancelled && classifyFailure(result.error) === "limit" ? parseReset(result.error) : null;
   if (netDrop) waitForNetwork(sid);
   update(sid, {
     status: result.ok ? "completed" : cancelled ? "cancelled" : "failed",
     error: result.ok ? null : result.error ?? "Failed.",
     endedAt: new Date().toISOString(),
     ...(netDrop ? { notice: "The network dropped. Nexus runs this step again as soon as the connection is back." } : {}),
+    ...(resetAt ? { retryAt: new Date(resetAt).toISOString(), notice: `Runs again at ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, when the usage limit resets.` } : {}),
   });
   addEvent(sid, result.ok ? "status" : "error", result.ok ? "Session finished." : result.error ?? "Failed.");
   if (!result.ok) cascadeBlocked(sid);

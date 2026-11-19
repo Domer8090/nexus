@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Copy, Columns2, Grid2x2, RotateCcw, Square, SquareTerminal, X } from "lucide-react";
+import { AppWindow, Bell, Copy, Columns2, ExternalLink, Grid2x2, ImagePlus, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
 import { api, useApi } from "@/lib/client";
 import { cx } from "@/components/ui";
 import { useWorkspace } from "@/components/workspace-context";
@@ -19,6 +19,9 @@ type ProcRow = { pid: number; ppid: number; cpu: number; rssMb: number; elapsed:
 type AdvSession = Session & { pid: number | null; procs: ProcRow[]; resume: string | null };
 type RawLine = { n: number; at: string; stream: "out" | "err"; line: string };
 type Log = { events: AgentEvent[]; raw: RawLine[]; loaded: boolean };
+type ViewResp = { url: string | null; entry: string | null; devCommand: string | null; framework: string | null; path: string; version: number; error?: string };
+const DEVICES = { desktop: { w: 0, h: 0, icon: Monitor, label: "Desktop" }, tablet: { w: 820, h: 1180, icon: Tablet, label: "iPad" }, phone: { w: 390, h: 844, icon: Smartphone, label: "iPhone" } } as const;
+type Device = keyof typeof DEVICES;
 
 const LIVE = ["running", "starting", "queued"];
 const LAYOUTS = [1, 2, 4] as const;
@@ -166,6 +169,8 @@ function Pane({
   now,
   agentName,
   index,
+  onOpen,
+  roomy,
 }: {
   s: AdvSession | null;
   log: Log | undefined;
@@ -176,8 +181,20 @@ function Pane({
   now: number;
   agentName: (id: string) => string;
   index: number;
+  onOpen: (id: string) => void;
+  /** One or two panes: room to open the app preview beside the terminal by itself. */
+  roomy: boolean;
 }) {
   const [view, setView] = useState<"events" | "raw">("events");
+  const [preview, setPreview] = useState<boolean | null>(null);
+  const [device, setDevice] = useState<Device>("desktop");
+  const [command, setCommand] = useState("");
+  const [sending, setSending] = useState(false);
+  const isLive = !!s && LIVE.includes(s.status);
+  const app = useApi<ViewResp>(s && s.status !== "queued" ? `/api/view?session=${s.id}` : null, { interval: isLive ? 5000 : 0 });
+  const appUrl = app.data?.url ?? null;
+  // Like a coding agent's preview panel: the app opens beside the terminal once there is one to show.
+  const showPreview = preview ?? (roomy && !!(appUrl || app.data?.devCommand));
   const [showProcs, setShowProcs] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -205,6 +222,21 @@ function Pane({
   };
 
   const copy = (text: string, ok: string) => act(() => navigator.clipboard.writeText(text), ok);
+
+  const send = async () => {
+    if (!s || !command.trim() || sending) return;
+    setSending(true);
+    try {
+      const r = await api<{ session: Session }>(`/api/sessions/${s.id}/action`, { body: { action: "revise", feedback: command.trim() } });
+      setCommand("");
+      onOpen(r.session.id);
+    } catch (e) {
+      setMsg((e as Error).message);
+      setTimeout(() => setMsg(null), 4000);
+    } finally {
+      setSending(false);
+    }
+  };
 
   if (!s)
     return (
@@ -245,6 +277,9 @@ function Pane({
               <RotateCcw size={14} />
             </IconBtn>
           )}
+          <IconBtn label={showPreview ? "Hide the app preview" : "Show the app preview"} onClick={() => setPreview(!showPreview)} active={showPreview}>
+            <AppWindow size={15} />
+          </IconBtn>
           <IconBtn label="Open Terminal in this session's folder" onClick={() => act(() => api("/api/advanced/open", { body: { sessionId: s.id } }), "Opened Terminal.")}>
             <SquareTerminal size={15} />
           </IconBtn>
@@ -265,6 +300,7 @@ function Pane({
         </span>
       </div>
 
+      <div className={cx("flex min-h-0 flex-1", showPreview && "flex-col xl:flex-row")}>
       <div
         ref={body}
         onScroll={(e) => {
@@ -292,6 +328,8 @@ function Pane({
             ))}
         {!lines && <p className="text-ink-3">{view === "raw" ? (s.agentId === "ollama" ? "Ollama runs as a local server, so there is no process output to show. Steps shows its stream." : "No raw output in memory. Nexus keeps it only while it runs, until it restarts.") : "No output yet."}</p>}
         {live && <span className="cursor-blink inline-block h-[1.05em] w-[0.55em] translate-y-[2px] bg-ink-2" aria-hidden />}
+      </div>
+      {showPreview && <AppPreview view={app.data} loading={app.loading} device={device} setDevice={setDevice} onTerminal={() => act(() => api("/api/advanced/open", { body: { sessionId: s.id } }), "Opened Terminal.")} copy={copy} />}
       </div>
 
       <footer className="border-t border-line px-3 py-2 font-mono text-[13px]">
@@ -339,22 +377,260 @@ function Pane({
             )}
           </div>
         )}
-        {(msg || s.error) && <p className={cx("mt-1 truncate", msg ? "text-ink" : "text-bad")}>{msg ?? s.error}</p>}
+        {(msg || s.error) && <p className={cx("mt-1 truncate", msg ? "text-ink" : "text-bad")} title={s.error ?? undefined}>{msg ?? s.error}</p>}
+        {s.status === "failed" && (s.retryAt || isLimit(s.error)) && (
+          <div className="mt-1 flex items-center gap-2 text-ink-2">
+            <span className="min-w-0 flex-1 truncate">{s.retryAt ? `Runs again at ${new Date(s.retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, when the limit resets.` : "Usage limit hit."}</span>
+            <button
+              type="button"
+              onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "wait-reset", wait: !s.retryAt } }), s.retryAt ? "Won't run again by itself." : "Waiting for the reset.")}
+              className="shrink-0 rounded border border-line-strong px-2 py-0.5 text-ink hover:bg-[#1f1f1f]"
+            >
+              {s.retryAt ? "Don't wait" : "Run when it resets"}
+            </button>
+          </div>
+        )}
       </footer>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+        className="flex items-center gap-2 border-t border-line px-3 py-2"
+      >
+        <span className="font-mono text-[14px] text-ok" aria-hidden>
+          ❯
+        </span>
+        <input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          disabled={live || sending}
+          aria-label={`Tell ${agentName(s.agentId)} what to change next`}
+          placeholder={live ? "Working. Stop it to change course, or wait for it to finish." : `Tell ${agentName(s.agentId)} what to change next`}
+          className="h-9 min-w-0 flex-1 bg-transparent font-mono text-[14px] text-ink placeholder:text-ink-3 focus:outline-none disabled:opacity-60"
+        />
+        <IconBtn label="Send to this agent" onClick={() => void send()}>
+          <Send size={14} />
+        </IconBtn>
+      </form>
     </section>
   );
 }
 
-function IconBtn({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+function isLimit(error: string | null) {
+  return !!error && /usage limit|rate[ -]?limit|hit your (?:[\w-]+ )?limit|try again (later|in|at)|resets? /i.test(error);
+}
+
+function AppPreview({ view, loading, device, setDevice, onTerminal, copy }: { view: ViewResp | null; loading: boolean; device: Device; setDevice: (d: Device) => void; onTerminal: () => void; copy: (t: string, ok: string) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const d = DEVICES[device];
+  const scale = d.w ? Math.min(1, (size.w - 24) / d.w, (size.h - 24) / d.h) : 1;
   return (
-    <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-7 place-items-center rounded text-ink-3 hover:bg-[#1f1f1f] hover:text-ink">
+    <div className="flex min-h-[260px] min-w-0 flex-1 flex-col border-t border-line xl:border-t-0 xl:border-l">
+      <div className="flex items-center gap-1 border-b border-line px-2 py-1 font-mono text-[13px]">
+        {(Object.keys(DEVICES) as Device[]).map((k) => {
+          const D = DEVICES[k];
+          return (
+            <IconBtn key={k} label={`Preview as ${D.label}`} onClick={() => setDevice(k)} active={device === k}>
+              <D.icon size={14} />
+            </IconBtn>
+          );
+        })}
+        <span className="ml-1 min-w-0 flex-1 truncate text-ink-3">{view?.url ? view.entry : view?.framework ?? "App preview"}</span>
+        {view?.url && (
+          <a href={view.url} target="_blank" rel="noreferrer" aria-label="Open the app in a new tab" title="Open the app in a new tab" className="grid size-7 place-items-center rounded text-ink-3 hover:bg-[#1f1f1f] hover:text-ink">
+            <ExternalLink size={14} />
+          </a>
+        )}
+      </div>
+      <div ref={box} className="relative grid min-h-0 flex-1 place-items-center overflow-hidden bg-[#141414]">
+        {view?.url ? (
+          d.w ? (
+            <div style={{ width: d.w * scale, height: d.h * scale }} className="overflow-hidden rounded-[22px] border-[6px] border-[#2a2a2a] bg-white shadow-[0_20px_60px_rgb(0_0_0/0.5)]">
+              <iframe key={`${view.version}-${device}`} src={view.url} title="App preview" style={{ width: d.w, height: d.h, transform: `scale(${scale})`, transformOrigin: "0 0" }} className="bg-white" />
+            </div>
+          ) : (
+            <iframe key={view.version} src={view.url} title="App preview" className="absolute inset-0 h-full w-full bg-white" />
+          )
+        ) : view?.devCommand ? (
+          <div className="max-w-sm p-4 text-center text-[14px] text-ink-2">
+            <p className="text-ink">This app runs with its own dev server.</p>
+            <code className="mt-2 block rounded bg-[#0b0b0b] px-2 py-1.5 font-mono text-[13px] text-ink">{view.devCommand}</code>
+            <div className="mt-3 flex justify-center gap-2">
+              <button type="button" onClick={() => copy(`cd '${view.path}' && ${view.devCommand}`, "Dev command copied.")} className="rounded border border-line-strong px-2.5 py-1 text-ink hover:bg-[#1f1f1f]">
+                Copy command
+              </button>
+              <button type="button" onClick={onTerminal} className="rounded border border-line-strong px-2.5 py-1 text-ink hover:bg-[#1f1f1f]">
+                Open Terminal
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="p-4 text-center text-[14px] text-ink-3">{loading ? "Looking for an app to preview…" : view?.error ?? "Nothing to preview yet. A page appears here once the agent writes one."}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IconBtn({ label, onClick, children, active }: { label: string; onClick: () => void; children: React.ReactNode; active?: boolean }) {
+  return (
+    <button type="button" aria-label={label} title={label} aria-pressed={active} onClick={onClick} className={cx("grid size-7 place-items-center rounded hover:bg-[#1f1f1f] hover:text-ink", active ? "bg-[#1f1f1f] text-ink" : "text-ink-3")}>
       {children}
     </button>
   );
 }
 
+/** Downscales an image to at most 1800 px on its longest side and re-encodes it as WebP. */
+async function shrink(file: File): Promise<string> {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k);
+  c.height = Math.round(bmp.height * k);
+  c.getContext("2d")!.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close();
+  return c.toDataURL("image/webp", 0.9);
+}
+
+type Picked = { agentName: string; model: string | null; why: string; by: "ollama" | "rules" };
+
+function AskAgents({ projectId, onStarted }: { projectId: string | null; onStarted: (id: string, pick: Picked) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const area = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setOpen(true);
+      } else if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (open) area.current?.focus();
+  }, [open]);
+
+  const add = async (files: File[]) => {
+    const imgs = files.filter((f) => f.type.startsWith("image/"));
+    if (!imgs.length) return;
+    try {
+      const out = await Promise.all(imgs.map(shrink));
+      setImages((cur) => [...cur, ...out].slice(0, 6));
+    } catch {
+      setErr("That image couldn't be read. Try a PNG or JPEG.");
+    }
+  };
+
+  const submit = async () => {
+    if (!projectId) return setErr("Pick a project in the menu first.");
+    if (!text.trim()) return setErr("Say what you want the agents to add.");
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ session: Session; pick: Picked }>("/api/advanced/ask", { body: { projectId, request: text, images } });
+      onStarted(r.session.id, r.pick);
+      setText("");
+      setImages([]);
+      setOpen(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="Ask the agents to add something (Cmd+K)"
+        className="btn-step m-2 inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-white px-4 text-[15px] font-semibold text-black hover:bg-[#e8e8e8]"
+      >
+        <MessageSquarePlus size={18} aria-hidden /> Ask the agents
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+          <button type="button" aria-label="Close" className="absolute inset-0 bg-[rgb(0_0_0/0.6)]" onClick={() => setOpen(false)} />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Ask the agents"
+            className="relative flex w-full max-w-2xl flex-col gap-4 rounded-xl border border-line-strong bg-[#0b0b0b] p-6"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              void add(Array.from(e.dataTransfer.files));
+            }}
+          >
+            <h2 className="text-[24px] font-semibold text-ink">What do you want the agents to add?</h2>
+            <textarea
+              ref={area}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.some((f) => f.type.startsWith("image/"))) {
+                  e.preventDefault();
+                  void add(files);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
+              }}
+              rows={6}
+              placeholder="A dark mode toggle in the header, like this screenshot. Paste or drop images here."
+              className="min-h-40 w-full resize-y rounded-lg border border-line bg-canvas p-4 text-[17px] text-ink placeholder:text-ink-3 focus:border-line-strong focus:outline-none"
+            />
+            {images.length > 0 && (
+              <ul className="flex flex-wrap gap-2">
+                {images.map((src, i) => (
+                  <li key={i} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt={`Attached image ${i + 1}`} className="h-20 w-28 rounded-md border border-line object-cover" />
+                    <button type="button" aria-label={`Remove image ${i + 1}`} onClick={() => setImages(images.filter((_, j) => j !== i))} className="absolute -top-2 -right-2 grid size-6 place-items-center rounded-full bg-white text-black">
+                      <X size={13} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {err && <p className="text-[15px] text-bad">{err}</p>}
+            <div className="flex items-center gap-2">
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={(e) => void add(Array.from(e.target.files ?? []))} />
+              <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex h-11 items-center gap-2 rounded-lg border border-line-strong px-4 text-[15px] text-ink hover:bg-[#1f1f1f]">
+                <ImagePlus size={16} aria-hidden /> Add images
+              </button>
+              <button type="button" disabled={busy} onClick={() => void submit()} className="ml-auto inline-flex h-11 items-center gap-2 rounded-lg bg-white px-5 text-[15px] font-semibold text-black hover:bg-[#e8e8e8] disabled:opacity-60">
+                <Send size={15} aria-hidden /> {busy ? "Picking an agent…" : "Send to the agents"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function AdvancedView() {
-  const { agents } = useWorkspace();
+  const { agents, project } = useWorkspace();
+  const [picked, setPicked] = useState<string | null>(null);
   const { data, error } = useApi<{ sessions: AdvSession[] }>("/api/advanced", { interval: 2500 });
   const sessions = useMemo(() => data?.sessions ?? [], [data]);
   const logs = useLogs(data?.sessions);
@@ -500,6 +776,13 @@ export function AdvancedView() {
           })}
           {!visible.length && <li className="px-2 py-6 text-[14px] text-ink-3">{error ?? (sessions.length ? "No session matches." : "No sessions yet. Start one from the Playground.")}</li>}
         </ul>
+        <AskAgents
+          projectId={project?.id ?? null}
+          onStarted={(id, p) => {
+            put(id);
+            setPicked(`${p.by === "ollama" ? "Ollama picked" : "Picked"} ${p.agentName}${p.model ? ` (${p.model})` : ""}: ${p.why}`);
+          }}
+        />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -509,6 +792,11 @@ export function AdvancedView() {
             {running} running{unread ? `, ${unread} need you` : ""}
             {!logs.liveOk && <span className="ml-2 text-warn">live stream reconnecting</span>}
           </span>
+          {picked && (
+            <span className="min-w-0 truncate text-[14px] text-ink" title={picked}>
+              {picked}
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-1" role="group" aria-label="Panes">
             {LAYOUTS.map((c) => (
               <button key={c} type="button" onClick={() => setLayout(c)} aria-pressed={count === c} aria-label={`${c} pane${c > 1 ? "s" : ""}`} title={`${c} pane${c > 1 ? "s" : ""}`} className={cx("grid size-8 place-items-center rounded", count === c ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
@@ -548,6 +836,11 @@ export function AdvancedView() {
                 onClose={() => setPanes((p) => p.map((x, j) => (j === i ? null : x)))}
                 now={now}
                 agentName={agentName}
+                roomy={count <= 2}
+                onOpen={(nid) => {
+                  setPanes((p) => p.map((x, j) => (j === i ? nid : x)));
+                  setFocus(i);
+                }}
               />
             );
           })}

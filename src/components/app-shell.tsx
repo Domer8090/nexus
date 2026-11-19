@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Blocks, Bot, FolderGit2, LayoutDashboard, Menu, PanelRight, Play, Plug, Plus, Settings, Sparkles, SquareTerminal, X } from "lucide-react";
+import { Blocks, Bot, FolderGit2, LayoutDashboard, Menu, PanelLeft, PanelRight, Play, Plug, Plus, Settings, Sparkles, SquareTerminal, X } from "lucide-react";
 import { NexusMark } from "./logo";
 import { ContextPanel } from "./context-panel";
 import { Button, cx } from "./ui";
@@ -112,6 +112,21 @@ function RuntimeStatus() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [drawer, setDrawer] = useState(false);
+  const [navHidden, setNavHidden] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setNavHidden(window.localStorage.getItem("nexus.nav.hidden") === "1");
+    } catch {}
+  }, []);
+  const toggleNav = () => {
+    setNavHidden((h) => {
+      try {
+        window.localStorage.setItem("nexus.nav.hidden", h ? "0" : "1");
+      } catch {}
+      return !h;
+    });
+  };
   const { contextOpen, setContextOpen } = useWorkspace();
   const title = TITLES.find(([re]) => re.test(pathname))?.[1] ?? "Nexus";
   const { data } = useApi<{ running: number; sessions: Session[] }>("/api/sessions", { interval: 4000 });
@@ -163,7 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <a href="#main" className="sr-only z-[70] rounded bg-surface px-3 py-2 focus:not-sr-only focus:fixed focus:top-3 focus:left-3">
         Skip to content
       </a>
-      <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-line px-3 py-4 lg:flex">{side()}</aside>
+      {!navHidden && <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-line px-3 py-4 lg:flex">{side()}</aside>}
 
       {drawer && (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -184,6 +199,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Button variant="ghost" size="sm" className="lg:hidden" aria-label="Open menu" aria-expanded={drawer} onClick={() => setDrawer(true)}>
             <Menu size={18} />
           </Button>
+          <span className="hidden lg:inline-flex">
+            <Button variant="ghost" size="sm" aria-pressed={!navHidden} aria-label={navHidden ? "Show the sidebar" : "Hide the sidebar"} title={navHidden ? "Show the sidebar" : "Hide the sidebar"} onClick={toggleNav}>
+              <PanelLeft size={17} />
+            </Button>
+          </span>
           <h1 className="truncate font-mono text-[13px] font-medium tracking-[0.02em]">{title}</h1>
           <div className="ml-auto flex items-center gap-1.5">
             <button

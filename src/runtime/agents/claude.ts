@@ -33,6 +33,9 @@ export function buildArgs(input: LaunchInput): string[] {
   extra.push("You are running inside Nexus. Work only inside the current directory. Do not push, deploy, or rewrite git history.");
   args.push("--append-system-prompt", extra.join("\n"));
   if (input.resumeNativeId) args.push("--resume", input.resumeNativeId);
+  // Attached images live in Nexus's data folder; give Claude Code read access to that folder only.
+  const dirs = Array.from(new Set((input.attachments ?? []).map((f) => f.slice(0, f.lastIndexOf("/")))));
+  if (dirs.length) args.push("--add-dir", ...dirs);
   args.push("-n", `nexus-${input.sessionId}`);
   return args;
 }

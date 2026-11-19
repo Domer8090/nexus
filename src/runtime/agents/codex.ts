@@ -53,6 +53,8 @@ export function buildCodexArgs(input: LaunchInput): string[] {
   if (p.editFiles && p.network) args.push("-c", "sandbox_workspace_write.network_access=true");
   if (input.model) args.push("-m", input.model);
   if (input.resumeNativeId) args.push(input.resumeNativeId);
+  // --image takes several values, so it goes before the next flag, never right before the prompt.
+  if (input.attachments?.length) args.splice(input.resumeNativeId ? 2 : 1, 0, "--image", ...input.attachments);
   args.push(prompt);
   return args;
 }
