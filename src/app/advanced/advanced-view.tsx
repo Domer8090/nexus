@@ -787,17 +787,17 @@ export function AdvancedView() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-          <span className="font-mono text-[14px] text-ink-2">
+          <span className="shrink-0 whitespace-nowrap font-mono text-[14px] text-ink-2">
             <span className={cx("mr-2 inline-block size-2 rounded-full", running ? "bg-ok live-dot" : "bg-ink-3")} aria-hidden />
             {running} running{unread ? `, ${unread} need you` : ""}
             {!logs.liveOk && <span className="ml-2 text-warn">live stream reconnecting</span>}
           </span>
           {picked && (
-            <span className="min-w-0 truncate text-[14px] text-ink" title={picked}>
+            <span className="min-w-0 flex-1 truncate text-[14px] text-ink" title={picked}>
               {picked}
             </span>
           )}
-          <div className="ml-auto flex items-center gap-1" role="group" aria-label="Panes">
+          <div className="ml-auto flex shrink-0 items-center gap-1" role="group" aria-label="Panes">
             {LAYOUTS.map((c) => (
               <button key={c} type="button" onClick={() => setLayout(c)} aria-pressed={count === c} aria-label={`${c} pane${c > 1 ? "s" : ""}`} title={`${c} pane${c > 1 ? "s" : ""}`} className={cx("grid size-8 place-items-center rounded", count === c ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
                 {c === 1 ? <Square size={15} /> : c === 2 ? <Columns2 size={15} /> : <Grid2x2 size={15} />}
