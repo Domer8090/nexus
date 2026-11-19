@@ -4,7 +4,7 @@ import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppWindow, Bell, Copy, Columns2, ExternalLink, Grid2x2, ImagePlus, Map as MapIcon, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
 import { api, useApi } from "@/lib/client";
-import { flyPaper } from "./fly-paper";
+import { startPaper } from "./fly-paper";
 import { ConceptMap } from "./concept-map";
 import { loadBacklog, subscribeLive, type RawLine } from "@/lib/live";
 import { cx } from "@/components/ui";
@@ -556,6 +556,7 @@ function AskAgents({ projectId, onStarted, target }: { projectId: string | null;
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [flying, setFlying] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -590,17 +591,22 @@ function AskAgents({ projectId, onStarted, target }: { projectId: string | null;
     if (!text.trim()) return setErr("Say what you want the agents to add.");
     setBusy(true);
     setErr(null);
+    // The request folds into a paper plane right away and circles while the local model picks an agent.
+    const from = dialog.current?.getBoundingClientRect();
+    const flight = from ? startPaper(from, text) : null;
+    setFlying(true);
     try {
       const r = await api<{ session: Session; pick: Picked }>("/api/advanced/ask", { body: { projectId, request: text, images } });
-      const from = dialog.current?.getBoundingClientRect();
-      const sent = text;
       onStarted(r.session.id, r.pick);
       setText("");
       setImages([]);
       setOpen(false);
-      // Let the pane switch to the new session first, then fly the request to it.
-      if (from) requestAnimationFrame(() => void flyPaper(from, target(), sent, r.pick.agentName));
+      setFlying(false);
+      // Let the pane switch to the new session first, then fly to it.
+      requestAnimationFrame(() => void flight?.land(target(), r.pick.agentName));
     } catch (e) {
+      flight?.abort();
+      setFlying(false);
       setErr((e as Error).message);
     } finally {
       setBusy(false);
@@ -618,7 +624,7 @@ function AskAgents({ projectId, onStarted, target }: { projectId: string | null;
         <MessageSquarePlus size={18} aria-hidden /> Ask the agents
       </button>
       {open && (
-        <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+        <div className={cx("fixed inset-0 z-[60] grid place-items-center p-4 transition-opacity duration-200", flying && "pointer-events-none opacity-0")}>
           <button type="button" aria-label="Close" className="absolute inset-0 bg-[rgb(0_0_0/0.6)]" onClick={() => setOpen(false)} />
           <div
             ref={dialog}

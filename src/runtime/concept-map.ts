@@ -39,8 +39,10 @@ export async function conceptMap(projectPath: string, projectId: string): Promis
     try {
       const st = fs.statSync(abs);
       if (!st.isFile()) continue;
-      if (TEXT.test(f) && st.size < 400_000) {
-        const src = fs.readFileSync(abs, "utf8");
+      // Text when the extension says so, or a small file without NUL bytes (.gitignore, Makefile).
+      const head = !TEXT.test(f) && st.size < 200_000 ? fs.readFileSync(abs) : null;
+      if ((TEXT.test(f) || (head && !head.includes(0))) && st.size < 400_000) {
+        const src = head ? head.toString("utf8") : fs.readFileSync(abs, "utf8");
         lines = src.split("\n").length;
         what = purpose(src);
         syms = symbols(f, src).slice(0, 8);
