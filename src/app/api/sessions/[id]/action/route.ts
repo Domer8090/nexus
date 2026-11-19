@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { bad, body } from "@/lib/api";
 import { audit } from "@/runtime/audit";
-import { cancel, getSession, listSessions, markReview, reassign, retry, revise, setResetWait } from "@/runtime/sessions";
-import { applyToProject, getProject, removeWorktree } from "@/runtime/workspace";
+import { cancel, getSession, listSessions, markAppliedFiles, markReview, reassign, retry, revise, setResetWait } from "@/runtime/sessions";
+import { applyToProject, diff, getProject, removeWorktree } from "@/runtime/workspace";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("cancel") }),
@@ -10,7 +10,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("wait-reset"), wait: z.boolean() }),
   z.object({ action: z.literal("reassign"), agentId: z.string().min(1).max(64), model: z.string().max(120).nullable().optional() }),
   z.object({ action: z.literal("revise"), feedback: z.string().trim().min(1, "Say what to change.").max(8000) }),
-  z.object({ action: z.literal("apply"), confirm: z.literal(true) }),
+  z.object({ action: z.literal("apply"), confirm: z.literal(true), files: z.array(z.string().min(1).max(1024)).max(2000).optional() }),
   z.object({ action: z.literal("discard"), confirm: z.literal(true) }),
 ]);
 
@@ -59,12 +59,34 @@ export async function POST(req: Request, ctx: RouteContext<"/api/sessions/[id]/a
   const sharing = listSessions({ workflowId: s.workflowId ?? undefined }).filter((x) => x.cwd === s.cwd && x.id !== s.id);
   if (sharing.some((x) => ["running", "starting", "queued"].includes(x.status))) return bad("Another step is still working in this worktree. Wait for it to finish.");
   if (a.action === "apply") {
-    const r = await applyToProject(s.cwd, s.baseRef, project.path);
-    audit("session.apply", `${id} -> ${project.path} ${r.ok ? `files=${r.files}` : "failed"}`);
+    let only: string[] | undefined;
+    let total = 0;
+    if (a.files) {
+      // Partial Apply: only paths that really are in this diff, minus ones already applied.
+      const d = await diff(s.cwd, s.baseRef);
+      if ("error" in d) return bad(d.error);
+      total = d.files.length;
+      const known = new Set(d.files.map((f) => f.path));
+      const done = new Set(s.appliedFiles ?? []);
+      only = a.files.filter((f) => known.has(f) && !done.has(f));
+      if (!only.length) return bad("Those files are already applied or no longer changed.");
+      if (!done.size && only.length === total) only = undefined; // every file: a normal Apply
+    } else if (s.appliedFiles?.length) {
+      const d = await diff(s.cwd, s.baseRef);
+      if ("error" in d) return bad(d.error);
+      only = d.files.map((f) => f.path).filter((f) => !s.appliedFiles!.includes(f));
+      total = d.files.length;
+    }
+    const r = await applyToProject(s.cwd, s.baseRef, project.path, only);
+    audit("session.apply", `${id} -> ${project.path} ${r.ok ? `files=${r.files}${only ? " (selected)" : ""}` : "failed"}`);
     if (!r.ok) return bad(r.error, 409, "conflict");
-    markReview(id, "applied");
-    for (const x of sharing) if (x.status === "completed") markReview(x.id, "applied");
-    return Response.json({ ok: true, files: r.files });
+    const appliedNow = only ?? [];
+    const allDone = !only || (s.appliedFiles?.length ?? 0) + appliedNow.length >= total;
+    if (allDone) {
+      markReview(id, "applied");
+      for (const x of sharing) if (x.status === "completed") markReview(x.id, "applied");
+    } else markAppliedFiles(id, appliedNow, total);
+    return Response.json({ ok: true, files: r.files, partial: !allDone });
   }
   await removeWorktree(project.path, s.cwd, s.worktreeBranch);
   markReview(id, "discarded");

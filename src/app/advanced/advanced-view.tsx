@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppWindow, Bell, Copy, Columns2, ExternalLink, Grid2x2, ImagePlus, Map as MapIcon, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
+import { AppWindow, Bell, Copy, FileCode2, NotebookPen, Columns2, ExternalLink, Grid2x2, ImagePlus, Map as MapIcon, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
 import { api, useApi } from "@/lib/client";
 import { startPaper } from "./fly-paper";
 import { ConceptMap } from "./concept-map";
 import { loadBacklog, subscribeLive, type RawLine } from "@/lib/live";
 import { cx } from "@/components/ui";
+import { ProjectNotes } from "@/components/project-notes";
+import { ReviewChanges } from "@/components/review-changes";
 import { useWorkspace } from "@/components/workspace-context";
 import type { AgentEvent, Session } from "@/lib/types";
 
@@ -19,6 +21,7 @@ import type { AgentEvent, Session } from "@/lib/types";
  */
 
 type ProcRow = { pid: number; ppid: number; cpu: number; rssMb: number; elapsed: string; args: string; depth: number };
+type Limit = { agentId: string; agentName: string; level: "ok" | "near" | "out"; text: string };
 type AdvSession = Session & { pid: number | null; procs: ProcRow[]; resume: string | null };
 type Log = { events: AgentEvent[]; raw: RawLine[]; loaded: boolean };
 type ViewResp = { url: string | null; entry: string | null; devCommand: string | null; framework: string | null; path: string; version: number; error?: string };
@@ -199,11 +202,14 @@ type PaneProps = {
   onOpen: (i: number, id: string) => void;
   /** One or two panes: room to open the app preview beside the terminal by itself. */
   roomy: boolean;
+  /** This session's agent, when it reported being near or at its usage limit. */
+  limit: Limit | null;
 };
 
 /** Re-render a pane only when its own session or output changed, not on every poll or keystroke elsewhere. */
 const Pane = memo(PaneInner, (a, b) => {
   for (const k of ["log", "version", "load", "focused", "onFocus", "onClose", "agentName", "index", "onOpen", "roomy"] as const) if (a[k] !== b[k]) return false;
+  if (a.limit?.text !== b.limit?.text) return false;
   return a.s === b.s || (!!a.s && !!b.s && JSON.stringify(a.s) === JSON.stringify(b.s));
 });
 
@@ -220,7 +226,10 @@ function PaneInner({
   index,
   onOpen: openAt,
   roomy,
+  limit,
 }: PaneProps) {
+  const { agents, project } = useWorkspace();
+  const [reviewing, setReviewing] = useState(false);
   const onFocus = () => focusAt(index);
   const onClose = () => closeAt(index);
   const onOpen = (nid: string) => openAt(index, nid);
@@ -287,6 +296,15 @@ function PaneInner({
 
   const live = LIVE.includes(s.status);
   const cmd = s.command.join(" ");
+  // Another signed-in agent that can do this step, for the near-limit offer.
+  const moveTo = agents.find(
+    (a) =>
+      a.id !== s.agentId &&
+      a.install === "installed" &&
+      (a.auth === "authenticated" || a.auth === "not-required") &&
+      (a.kind !== "local-runtime" || a.models.length > 0) &&
+      (s.permissions.editFiles ? a.nexusCapabilities.includes("edits-project") : true),
+  );
   return (
     <section
       onMouseDown={onFocus}
@@ -317,6 +335,11 @@ function PaneInner({
           ) : (s.status === "failed" || s.status === "cancelled") && (
             <IconBtn label="Run this session again" onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "retry" } }), "Queued again.")}>
               <RotateCcw size={14} />
+            </IconBtn>
+          )}
+          {s.permissions.editFiles && !live && ["completed", "applied"].includes(s.status) && (
+            <IconBtn label="Review changes" onClick={() => setReviewing(true)} active={reviewing}>
+              <FileCode2 size={15} />
             </IconBtn>
           )}
           <IconBtn label={showPreview ? "Hide the app preview" : "Show the app preview"} onClick={() => setPreview(!showPreview)} active={showPreview}>
@@ -425,6 +448,22 @@ function PaneInner({
           </div>
         )}
         {(msg || s.error) && <p className={cx("mt-1 truncate", msg ? "text-ink" : "text-bad")} title={s.error ?? undefined}>{msg ?? s.error}</p>}
+        {limit && limit.level !== "ok" && (s.status === "queued" || s.status === "running" || s.status === "starting") && (
+          <div className="mt-1 flex items-center gap-2 text-warn">
+            <span className="min-w-0 flex-1 truncate" title={limit.text}>
+              {limit.text}
+            </span>
+            {s.status === "queued" && moveTo && (
+              <button
+                type="button"
+                onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "reassign", agentId: moveTo.id } }), `Moved to ${moveTo.displayName}.`)}
+                className="shrink-0 rounded border border-line-strong px-2 py-0.5 text-ink hover:bg-[#1f1f1f]"
+              >
+                Move to {moveTo.displayName}
+              </button>
+            )}
+          </div>
+        )}
         {s.status === "failed" && (s.retryAt || isLimit(s.error)) && (
           <div className="mt-1 flex items-center gap-2 text-ink-2">
             <span className="min-w-0 flex-1 truncate">{s.retryAt ? `Runs again at ${new Date(s.retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, when the limit resets.` : "Usage limit hit."}</span>
@@ -460,6 +499,7 @@ function PaneInner({
           <Send size={14} />
         </IconBtn>
       </form>
+      {reviewing && <ReviewChanges s={s} open onClose={() => setReviewing(false)} onChanged={() => {}} notify={(m) => { setMsg(m); setTimeout(() => setMsg(null), 4000); }} projectName={project?.name ?? "your project"} />}
     </section>
   );
 }
@@ -699,6 +739,10 @@ export function AdvancedView() {
   const [seen, setSeen] = useState<Record<string, string> | null>(null);
   const [filter, setFilter] = useState("");
   const [mode, setMode] = useState<"terminals" | "map">("terminals");
+  const [notesOpen, setNotesOpen] = useState(false);
+  const limitsApi = useApi<{ limits: Limit[] }>("/api/limits", { interval: 60_000 });
+  const limits = useMemo(() => limitsApi.data?.limits ?? [], [limitsApi.data]);
+  const warnings = limits.filter((l) => l.level !== "ok");
   const filled = useRef(false);
 
   useEffect(() => {
@@ -856,12 +900,20 @@ export function AdvancedView() {
             {running} running{unread ? `, ${unread} need you` : ""}
             {!logs.liveOk && <span className="ml-2 text-warn">live stream reconnecting</span>}
           </span>
+          {warnings.length > 0 && !picked && (
+            <span className="min-w-0 flex-1 truncate font-mono text-[14px] text-warn" title={warnings.map((w) => w.text).join(" ")}>
+              {warnings.map((w) => w.text).join(" ")}
+            </span>
+          )}
           {picked && (
             <span className="min-w-0 flex-1 truncate text-[14px] text-ink" title={picked}>
               {picked}
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-1" role="group" aria-label="Panes">
+            <button type="button" onClick={() => setNotesOpen(true)} title="Rules and decisions every new step in this project gets" className="mr-1 inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-[14px] text-ink-3 hover:text-ink">
+              <NotebookPen size={15} aria-hidden /> Notes
+            </button>
             <button type="button" onClick={() => setMode(mode === "map" ? "terminals" : "map")} aria-pressed={mode === "map"} className={cx("mr-1 inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-[14px]", mode === "map" ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
               <MapIcon size={15} aria-hidden /> Map
             </button>
@@ -910,11 +962,13 @@ export function AdvancedView() {
                 roomy={count <= 2}
                 onOpen={openAt}
                 version={s ? logs.version(s.id) : 0}
+                limit={s ? (limits.find((l) => l.agentId === s.agentId) ?? null) : null}
               />
             );
           })}
         </div>
       </div>
+      <ProjectNotes projectId={project?.id ?? null} projectName={project?.name ?? "this project"} open={notesOpen} onClose={() => setNotesOpen(false)} dark />
     </div>
   );
 }

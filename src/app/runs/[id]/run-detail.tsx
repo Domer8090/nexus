@@ -3,12 +3,13 @@
 import { Picker } from "@/components/picker";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, ArrowRightLeft, Bookmark, Check, CircleStop, Copy, Info, FileCode2, FlaskConical, GitMerge, MessageSquareReply, RotateCw, SquareTerminal, Trash2 } from "lucide-react";
 import { AgentMark, SessionBadge } from "@/components/agent-bits";
 import { Button, ConfirmDialog, Dialog, Drawer, Segmented, Spinner, Toast, cx, inputClass } from "@/components/ui";
+import { ReviewChanges } from "@/components/review-changes";
 import { useWorkspace } from "@/components/workspace-context";
 import { api, fmtNum, useApi } from "@/lib/client";
 import { tidyPath } from "@/lib/format";
@@ -17,53 +18,9 @@ import { useSessionStream } from "@/lib/live";
 import { CONCISE_LABELS, type AgentStatus, type Session, type Workflow } from "@/lib/types";
 
 type WorkflowResp = { workflow: Workflow; sessions: Session[]; overlaps: { file: string; sessions: string[] }[] };
-type DiffResp = { files: { path: string; status: string; additions: number; deletions: number; binary: boolean }[]; patch: string; truncated?: boolean; note?: string; isolated?: boolean; branch?: string | null; base?: string | null };
 
 const ROLE: Record<Session["role"], string> = { solo: "Solo", plan: "Plan", build: "Build", review: "Review", parallel: "Parallel", revise: "Revision", copy: "Copy", assets: "Images" };
 const active = (s: Session) => s.status === "running" || s.status === "starting" || s.status === "queued";
-
-export function DiffView({ diff }: { diff: DiffResp }) {
-  const [file, setFile] = useState<string | null>(null);
-  const chunks = useMemo(() => {
-    const out: { path: string; lines: string[] }[] = [];
-    for (const line of diff.patch.split("\n")) {
-      if (line.startsWith("diff --git ")) out.push({ path: line.split(" b/").pop() ?? line, lines: [] });
-      out.at(-1)?.lines.push(line);
-    }
-    return out;
-  }, [diff.patch]);
-  if (diff.note) return <p className="text-[13px] text-ink-2">{diff.note}</p>;
-  if (!diff.files.length) return <p className="text-[13px] text-ink-2">No file changes.</p>;
-  const shown = file ? chunks.filter((c) => c.path === file) : chunks;
-  return (
-    <div className="flex flex-col gap-3">
-      <ul className="flex flex-col gap-0.5 text-[12.5px]">
-        {diff.files.map((f) => (
-          <li key={f.path}>
-            <button type="button" onClick={() => setFile(file === f.path ? null : f.path)} className={cx("flex w-full items-center gap-2 rounded px-2 py-1 text-left font-mono hover:bg-surface-2", file === f.path && "bg-surface-2")}>
-              <span className={cx("w-14 shrink-0 text-[11px]", f.status === "added" ? "text-ok" : f.status === "deleted" ? "text-bad" : "text-warn")}>{f.status}</span>
-              <span className="min-w-0 flex-1 truncate text-ink">{f.path}</span>
-              <span className="text-ok">+{f.additions}</span>
-              <span className="text-bad">-{f.deletions}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      <div className="term overflow-x-auto rounded-[var(--radius-control)] border border-line">
-        {shown.map((c) => (
-          <pre key={c.path} className="min-w-max border-b border-line px-3 py-2 last:border-0">
-            {c.lines.map((l, i) => (
-              <div key={i} className={cx(l.startsWith("+") && !l.startsWith("+++") && "diff-add", l.startsWith("-") && !l.startsWith("---") && "diff-del", l.startsWith("@@") && "diff-hunk", (l.startsWith("diff ") || l.startsWith("index ")) && "text-ink-3")}>
-                {l || " "}
-              </div>
-            ))}
-          </pre>
-        ))}
-      </div>
-      {diff.truncated && <p className="text-[12px] text-warn">The diff is large and was cut off. Open the worktree to see everything.</p>}
-    </div>
-  );
-}
 
 const SIGN_IN_CMD: Record<string, string> = { "claude-code": "claude auth login", codex: "codex login" };
 
@@ -156,9 +113,8 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
   const agent = agents.find((a) => a.id === s.agentId);
   const [view, setView] = useState<"output" | "activity">("output");
   const [diffOpen, setDiffOpen] = useState(false);
-  const [diff, setDiff] = useState<DiffResp | null>(null);
   const [termOpen, setTermOpen] = useState(false);
-  const [confirm, setConfirm] = useState<"apply" | "discard" | null>(null);
+  const [confirm, setConfirm] = useState<"discard" | null>(null);
   const [revise, setRevise] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [check, setCheck] = useState<string | null>(null);
@@ -189,15 +145,7 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
     }
   };
 
-  const openDiff = async () => {
-    setDiffOpen(true);
-    setDiff(null);
-    try {
-      setDiff(await api<DiffResp>(`/api/sessions/${s.id}/diff`));
-    } catch (e) {
-      setDiff({ files: [], patch: "", note: (e as Error).message });
-    }
-  };
+  const openDiff = () => setDiffOpen(true);
 
   const canReview = s.permissions.editFiles && !active(s) && s.status !== "discarded";
   const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -321,12 +269,12 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
           )}
           {canReview && (
             <Button size="sm" variant={s.status === "completed" ? "primary" : "secondary"} onClick={openDiff}>
-              <FileCode2 size={14} aria-hidden /> Review diff
+              <FileCode2 size={14} aria-hidden /> Review changes
             </Button>
           )}
           {canReview && s.worktreeBranch && s.status === "completed" && (
-            <Button size="sm" onClick={() => setConfirm("apply")}>
-              <GitMerge size={14} aria-hidden /> Apply
+            <Button size="sm" onClick={openDiff}>
+              <GitMerge size={14} aria-hidden /> Review and apply
             </Button>
           )}
           {s.status === "completed" && agent?.nexusCapabilities.includes("resume") && s.nativeSessionId && (
@@ -358,30 +306,7 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
         )}
       </footer>
 
-      <Drawer
-        open={diffOpen}
-        onClose={() => setDiffOpen(false)}
-        title={
-          <div>
-            <h2 className="text-[16px] font-semibold">Changes from {s.title}</h2>
-            <p className="font-mono text-[12px] text-ink-3">
-              {diff?.isolated ? `Worktree ${tidyPath(s.cwd)} on ${diff.branch}, compared with ${diff.base?.slice(0, 8)}` : `Folder ${tidyPath(s.cwd)} compared with ${s.baseRef?.slice(0, 8) ?? "HEAD"}`}
-            </p>
-          </div>
-        }
-        footer={
-          s.worktreeBranch && s.status === "completed" ? (
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button onClick={() => setConfirm("discard")}>Discard</Button>
-              <Button variant="primary" onClick={() => setConfirm("apply")}>
-                <GitMerge size={14} aria-hidden /> Apply to project
-              </Button>
-            </div>
-          ) : undefined
-        }
-      >
-        {diff ? <DiffView diff={diff} /> : <Spinner />}
-      </Drawer>
+      <ReviewChanges s={s} open={diffOpen} onClose={() => setDiffOpen(false)} onChanged={onChanged} onDiscard={s.worktreeBranch ? () => setConfirm("discard") : undefined} notify={notify} projectName={projectName} />
 
       <Drawer open={termOpen} onClose={() => setTermOpen(false)} title={<h2 className="text-[16px] font-semibold">Session log</h2>}>
         <p className="mb-1 text-[12px] text-ink-3">Command (secrets redacted, brief shortened)</p>
@@ -395,20 +320,6 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
         </pre>
       </Drawer>
 
-      <ConfirmDialog
-        open={confirm === "apply"}
-        onCancel={() => setConfirm(null)}
-        onConfirm={async () => {
-          setConfirm(null);
-          if (await act("apply", { confirm: true })) {
-            notify("Changes applied to your project as uncommitted edits.");
-            setDiffOpen(false);
-          }
-        }}
-        title="Apply these changes to your project?"
-        body={<p>Nexus copies this session&apos;s changes into <span className="font-mono">{projectName}</span> as uncommitted edits. It does not commit or push. If files conflict, nothing is changed.</p>}
-        confirmLabel="Apply changes"
-      />
       <ConfirmDialog
         open={confirm === "discard"}
         onCancel={() => setConfirm(null)}

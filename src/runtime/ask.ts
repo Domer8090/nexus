@@ -4,6 +4,7 @@ import { bestModel } from "@/lib/model-pick";
 import { canLaunch, detectAll } from "./agents/registry";
 import { localJson, localModels, pickLight } from "./intake";
 import { newId } from "./ids";
+import { describe, limitsFor } from "./limits";
 import { nexusHome } from "./paths";
 import type { AgentStatus, SessionRole } from "@/lib/types";
 
@@ -47,12 +48,17 @@ function fitsRequest(a: AgentStatus, hasImages: boolean) {
 }
 
 export async function pickAgent(request: string, hasImages: boolean, set: { claudeModel?: string | null; codexModel?: string | null }): Promise<Pick> {
-  const ready = (await detectAll()).filter((a) => fitsRequest(a, hasImages));
+  const all = (await detectAll()).filter((a) => fitsRequest(a, hasImages));
+  // Skip agents that already reported a full usage limit, unless nothing else is ready.
+  const open = all.filter((a) => limitsFor(a.id)?.level !== "out");
+  const ready = open.length ? open : all;
   if (!ready.length) throw new Error(hasImages ? "No signed-in agent that can read images and edit files. Sign in to Claude Code or Codex in Agents." : "No agent is ready to edit files. Check Agents.");
   const result = (a: AgentStatus, size: "small" | "large", why: string, by: Pick["by"]): Pick => {
     let model = bestModel(a, "build", set);
     if (a.id === "claude-code" && !set.claudeModel) model = size === "large" ? "opus" : "sonnet";
-    return { agentId: a.id, agentName: a.displayName, model, role: "solo", why, by };
+    const lim = limitsFor(a.id);
+    const warn = lim && lim.level !== "ok" ? ` ${describe(lim)}` : "";
+    return { agentId: a.id, agentName: a.displayName, model, role: "solo", why: `${why}${warn}`, by };
   };
   const models = await localModels();
   const light = models?.length ? pickLight(models) : null;

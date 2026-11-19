@@ -174,6 +174,8 @@ export type Session = {
   notice?: string | null;
   /** Usage limit hit: Nexus runs this step again at this time, when the agent's limit resets. */
   retryAt?: string | null;
+  /** Files already copied into the project by a partial Apply. */
+  appliedFiles?: string[];
   /** Images attached to the request (absolute paths under Nexus's own data folder). */
   attachments?: string[];
   permissions: PermissionSet;

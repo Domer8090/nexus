@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { commandPreview, killTree, onLines, run, spawnLong, which } from "../proc";
 import { redact } from "../redact";
+import type { UsageMetrics } from "@/lib/types";
+import { codexRateLimits } from "./codex-limits";
 import type { AgentAdapter, LaunchInput } from "./types";
 import { CONCISE_INSTRUCTIONS } from "./types";
 
@@ -128,6 +130,16 @@ export const codexAdapter: AgentAdapter = {
     let failed: string | undefined;
     let completed = false;
     const usage = { input: 0, output: 0, cached: 0 };
+    let threadId: string | null = null;
+    const report = (quota?: NonNullable<UsageMetrics["quota"]>) =>
+      sink.setUsage({
+        inputTokens: usage.input,
+        outputTokens: usage.output,
+        cacheReadTokens: usage.cached,
+        model: input.model ?? undefined,
+        quota,
+        source: quota ? "Codex `exec --json` turn.completed event; limits from Codex's own session log" : "Codex `exec --json` turn.completed event",
+      });
 
     onLines(child.stdout!, (line) => {
       sink.raw?.("out", line);
@@ -138,6 +150,7 @@ export const codexAdapter: AgentAdapter = {
         return;
       }
       if (o.type === "thread.started" && o.thread_id) {
+        threadId = o.thread_id;
         sink.setNativeId(o.thread_id);
         sink.emit("status", "Codex session ready");
       } else if (o.type === "item.started" && o.item?.type === "command_execution") {
@@ -162,7 +175,7 @@ export const codexAdapter: AgentAdapter = {
         usage.input += u.input_tokens ?? 0;
         usage.output += (u.output_tokens ?? 0) + (u.reasoning_output_tokens ?? 0);
         usage.cached += u.cached_input_tokens ?? 0;
-        sink.setUsage({ inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cached, model: input.model ?? undefined, source: "Codex `exec --json` turn.completed event" });
+        report();
       } else if (o.type === "turn.failed") {
         failed = o.error?.message ?? "Codex turn failed.";
       } else if (o.type === "error" && o.message) {
@@ -181,6 +194,9 @@ export const codexAdapter: AgentAdapter = {
       child.on("error", (e) => resolve({ ok: false, error: `Could not start Codex: ${e.message}` }));
       child.on("close", (code, signal) => {
         if (lastMessage) sink.setSummary(lastMessage);
+        // Codex writes its usage limits to its own session log, not to --json output.
+        const limits = threadId ? codexRateLimits(threadId) : null;
+        if (limits) report(limits.quota);
         if (cancelled) return resolve({ ok: false, error: "Stopped by you." });
         if (failed) return resolve({ ok: false, error: short(redact(failed), 400) });
         if (code === 0 && completed) return resolve({ ok: true });

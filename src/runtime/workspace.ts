@@ -197,9 +197,11 @@ export async function diff(cwd: string, base: string | null): Promise<{ patch: s
 }
 
 /** Applies a session worktree's changes to the project as uncommitted changes. Never commits or pushes. */
-export async function applyToProject(worktree: string, base: string, projectPath: string): Promise<{ ok: true; files: number } | { ok: false; error: string }> {
+export async function applyToProject(worktree: string, base: string, projectPath: string, only?: string[]): Promise<{ ok: true; files: number } | { ok: false; error: string }> {
   await run("git", ["add", "--intent-to-add", "--all"], { cwd: worktree, timeoutMs: 20_000 });
-  const p = await run("git", ["diff", "--binary", "--no-color", base], { cwd: worktree, timeoutMs: 60_000, maxBytes: 96 * 1024 * 1024 });
+  if (only && !only.length) return { ok: false, error: "Pick at least one file to apply." };
+  // `only` limits the patch to those paths (a partial Apply); `--` stops paths being read as options.
+  const p = await run("git", ["diff", "--binary", "--no-color", base, ...(only ? ["--", ...only] : [])], { cwd: worktree, timeoutMs: 60_000, maxBytes: 96 * 1024 * 1024 });
   if (!p.stdout.trim()) return { ok: false, error: "There are no changes to apply." };
   const check = await run("git", ["apply", "--check", "--whitespace=nowarn", "-"], { cwd: projectPath, input: p.stdout, timeoutMs: 30_000 });
   if (check.code !== 0) {

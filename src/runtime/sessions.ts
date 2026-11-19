@@ -8,6 +8,8 @@ import { getSettings } from "./settings";
 import { canLaunch, detectAll, getAdapter, invalidateDetection } from "./agents/registry";
 import { bestModel } from "@/lib/model-pick";
 import { startPowerWatch, waitForNetwork } from "./power";
+import { describe, limitsFor } from "./limits";
+import { notesContext } from "./notes";
 import { MAP_FILE, MAP_INSTRUCTION, buildMap, writeMap } from "./project-map";
 import { canHandOff, classifyFailure } from "@/lib/failure";
 import { parseReset } from "@/lib/limit-reset";
@@ -311,7 +313,7 @@ export function retry(sessionId: string): Session {
 export async function reassign(sessionId: string, agentId: string, model: string | null): Promise<Session> {
   const s = getSession(sessionId);
   if (!s) throw new Error("Session not found.");
-  if (!["failed", "cancelled"].includes(s.status)) throw new Error("Only failed or stopped steps can be moved to another agent.");
+  if (!["failed", "cancelled", "queued"].includes(s.status)) throw new Error("Only waiting, failed or stopped steps can be moved to another agent.");
   const a = (await detectAll(true)).find((x) => x.id === agentId);
   if (!a || !canLaunch(a)) throw new Error("That agent is not installed and signed in, so it can't take this step.");
   if (!fits(s, a)) throw new Error(`${a.displayName} can't do this step (${s.permissions.editFiles ? "it needs an agent that edits files" : "wrong capability"}).`);
@@ -356,6 +358,14 @@ export function cancel(sessionId: string) {
 
 export function markReview(sessionId: string, status: "applied" | "discarded") {
   return update(sessionId, { status });
+}
+
+/** Records files copied into the project by a partial Apply. */
+export function markAppliedFiles(sessionId: string, files: string[], total: number) {
+  return update(sessionId, (s) => {
+    const done = Array.from(new Set([...(s.appliedFiles ?? []), ...files]));
+    return { appliedFiles: done, notice: `Applied ${done.length} of ${total} changed files to your project. The rest stay in the worktree.` };
+  });
 }
 
 export function runningCount() {
@@ -520,6 +530,16 @@ async function start(s0: Session) {
     state.handles.set(s.id, placeholder);
     return fail(why);
   }
+  // The agent already reported a full usage limit: hand the step on before it fails.
+  const lim = limitsFor(s.agentId);
+  if (lim?.level === "out") {
+    state.handles.delete(s.id);
+    if (await handOff(s.id, `${describe(lim)} Its usage limit is reached.`)) return pump();
+    state.handles.set(s.id, placeholder);
+    addEvent(s.id, "system", `${describe(lim)} No other agent can take this step, so Nexus runs it anyway.`);
+  } else if (lim?.level === "near") {
+    addEvent(s.id, "system", `${describe(lim)} You can move this step to another agent.`);
+  }
 
   // Team builds: later steps work in the worktree an earlier step created.
   const shared = s.shareWorktreeOf ? getSession(s.shareWorktreeOf) : null;
@@ -555,6 +575,12 @@ async function start(s0: Session) {
 
   const parent = s.parentSessionId ? getSession(s.parentSessionId) : null;
   let ctx = await contextFor(s);
+  // The user's project notes go to every new step, so they don't explain the same rules twice.
+  const notes = s.role === "revise" ? null : notesContext(s.projectId);
+  if (notes) {
+    ctx = [notes, ctx].filter(Boolean).join("\n\n---\n\n");
+    addEvent(s.id, "system", `Gave the agent your project notes (${notes.split("\n").length - 1} lines).`);
+  }
   // One-file project map, so the agent doesn't spend its turn listing folders and opening files.
   if (getSettings().projectMap && s.role !== "revise") {
     try {
