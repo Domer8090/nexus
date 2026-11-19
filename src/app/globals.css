@@ -1,0 +1,450 @@
+@import "tailwindcss";
+
+/*
+  Nexus design tokens
+  Monochrome: true black canvas, white ink in steps of opacity, white as the one action colour.
+  Geist for reading, Geist Mono for labels, buttons and anything a machine produced.
+  Corners are near-square (2 to 6px). Colour appears only for status: ok, warn, bad.
+*/
+
+:root {
+  --canvas: #000000;
+  --canvas-tint-a: #0b0b0d;
+  --canvas-tint-b: #050505;
+  --surface: #0a0a0a;
+  --surface-2: #141414;
+  --ink: #ffffff;
+  --ink-2: #a1a1a1;
+  --ink-3: #6e6e6e;
+  --line: #1f1f1f;
+  --line-strong: #383838;
+  --accent: #ffffff;
+  --accent-hover: #e4e4e4;
+  --accent-soft: #1c1c1c;
+  --accent-ink: #000000;
+  --ok: #34d399;
+  --ok-soft: #0c2018;
+  --warn: #f5b04c;
+  --warn-soft: #2a1f0e;
+  --bad: #f2705e;
+  --bad-soft: #2a1210;
+  --glass-fill: rgb(0 0 0 / 0.55);
+  --glass-edge: rgb(255 255 255 / 0.12);
+  --glass-shade: rgb(0 0 0 / 0.6);
+  --shadow-raise: none;
+  --term: #050505;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --canvas: #fafafa;
+  --canvas-tint-a: #f2f2f2;
+  --canvas-tint-b: #f5f5f5;
+  --surface: #ffffff;
+  --surface-2: #f2f2f2;
+  --ink: #0a0a0a;
+  --ink-2: #525252;
+  --ink-3: #737373;
+  --line: #e5e5e5;
+  --line-strong: #c7c7c7;
+  --accent: #0a0a0a;
+  --accent-hover: #2a2a2a;
+  --accent-soft: #ededed;
+  --accent-ink: #ffffff;
+  --ok: #0f7a4f;
+  --ok-soft: #e3f3eb;
+  --warn: #92560a;
+  --warn-soft: #fbefdc;
+  --bad: #b3352a;
+  --bad-soft: #f9e5e2;
+  --glass-fill: rgb(255 255 255 / 0.7);
+  --glass-edge: rgb(0 0 0 / 0.08);
+  --glass-shade: rgb(0 0 0 / 0.08);
+  --shadow-raise: none;
+  --term: #111111;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-term: var(--term);
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-geist), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-chip: 2px;
+  --radius-control: 3px;
+  --radius-panel: 4px;
+  --radius-dock: 6px;
+}
+
+html,
+body {
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+}
+
+/* Small mono label with a dot: marks what a section is. */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+.eyebrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+/* Second half of a heading, in the quieter ink. */
+.dim {
+  color: color-mix(in oklab, var(--ink) 45%, transparent);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Liquid glass (web translation) ----------
+   Functional layer only. Never nested inside another .glass, never given opacity < 1. */
+.glass {
+  background: var(--glass-fill);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-edge),
+    inset 0 -1px 0 0 rgb(0 0 0 / 0.04),
+    0 10px 30px -14px var(--glass-shade);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .glass {
+    background: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: var(--ink-2);
+  }
+  :root {
+    --line: var(--line-strong);
+  }
+}
+
+/* Panels sit on the content layer: solid, no glass. */
+.panel {
+  background: color-mix(in oklab, var(--ink) 2%, var(--canvas));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-raise);
+}
+
+/* ---------- Response markdown ---------- */
+.prose-nexus {
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.prose-nexus > * + * {
+  margin-top: 0.75em;
+}
+.prose-nexus h1,
+.prose-nexus h2,
+.prose-nexus h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin-top: 1.3em;
+}
+.prose-nexus h1 { font-size: 1.25rem; }
+.prose-nexus h2 { font-size: 1.12rem; }
+.prose-nexus h3 { font-size: 1rem; }
+.prose-nexus :first-child { margin-top: 0; }
+.prose-nexus ul { list-style: disc; padding-left: 1.25rem; }
+.prose-nexus ol { list-style: decimal; padding-left: 1.25rem; }
+.prose-nexus li + li { margin-top: 0.25em; }
+.prose-nexus a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-nexus strong { font-weight: 600; }
+.prose-nexus em { color: var(--ink-2); }
+.prose-nexus code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.08em 0.35em;
+}
+.prose-nexus pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+}
+.prose-nexus pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.prose-nexus table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.prose-nexus th,
+.prose-nexus td { text-align: left; border-bottom: 1px solid var(--line); padding: 0.4rem 0.5rem; vertical-align: top; }
+.prose-nexus th { font-weight: 600; color: var(--ink-2); }
+.prose-nexus blockquote { border-left: 3px solid var(--line-strong); padding-left: 0.9rem; color: var(--ink-2); }
+
+/* ---------- Live work: motion only where something is actually running ---------- */
+.live-dot {
+  position: relative;
+}
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  animation: live-ring 1.6s ease-out infinite;
+}
+@keyframes live-ring {
+  from { transform: scale(0.6); opacity: 0.9; }
+  to { transform: scale(1.6); opacity: 0; }
+}
+
+.edge-flow {
+  stroke-dasharray: 5 6;
+  animation: edge-flow 0.9s linear infinite;
+}
+@keyframes edge-flow { to { stroke-dashoffset: -22; } }
+
+.term {
+  background: var(--term);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-add { background: color-mix(in oklab, var(--ok) 14%, transparent); color: var(--ink); }
+.diff-del { background: color-mix(in oklab, var(--bad) 14%, transparent); color: var(--ink); }
+.diff-hunk { color: var(--accent); }
+
+@keyframes rise-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.rise-in { animation: rise-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .live-dot::after { display: none; }
+}
+
+/* ---------- Mosaic hero (pixel type + WebGL sky) ---------- */
+.mosaic-sky {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Painted fallback until WebGL draws, and for browsers without it. */
+  background:
+    radial-gradient(40rem 22rem at 70% 40%, rgb(150 165 190 / 0.18), transparent 70%),
+    radial-gradient(30rem 18rem at 20% 80%, rgb(230 220 205 / 0.1), transparent 70%),
+    #000;
+}
+.mosaic-sky[data-sky="webgl"] { background: #000; }
+
+.px-text { display: block; width: 100%; height: auto; overflow: visible; }
+.px-text .px {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: px-in 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--d);
+}
+@keyframes px-in {
+  from { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+/* Typing caret for the composer placeholder. */
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: currentColor;
+  opacity: 0.6;
+  animation: caret 1s steps(1) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+
+/* Joined button group: square inner edges, one shared border. */
+.btn-pair > :first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.btn-pair > :last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0; }
+
+/* ---------- Page band: the Home hero's look, without WebGL ----------
+   A still mosaic of light (soft glows seen through a tile grid), so every page header matches Home
+   at no GPU cost. Nexus keeps visited pages mounted, so a live canvas per page would pile up. */
+.page-sky {
+  background:
+    linear-gradient(to bottom, transparent 40%, rgb(0 0 0 / 0.7)),
+    radial-gradient(28rem 14rem at 78% 30%, rgb(170 182 205 / 0.32), transparent 70%),
+    radial-gradient(22rem 12rem at 18% 85%, rgb(232 222 205 / 0.16), transparent 70%),
+    radial-gradient(16rem 10rem at 50% 0%, rgb(150 165 190 / 0.14), transparent 70%),
+    #000;
+  position: relative;
+  isolation: isolate;
+}
+.page-sky::before {
+  /* the tile gaps: a black grid laid over the light */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, #000 0 3px, transparent 3px),
+    linear-gradient(to bottom, #000 0 3px, transparent 3px);
+  background-size: 22px 22px;
+  opacity: 0.92;
+}
+
+/* Pixel type that has already entered this visit stands still. */
+.px-text.is-still .px { animation: none; }
+
+/* ---------- Hover and press layer (taste skill motion tokens) ----------
+   Buttons step 1px up on hover and sink 1px with scale .985 on press; fine pointer only.
+   Linked cards lift 2px. Transform and colour only. */
+.btn-step {
+  transition:
+    transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-step:not(:disabled):hover { transform: translateY(-1px); }
+}
+.btn-step:not(:disabled):active { transform: translateY(1px) scale(0.985); transition-duration: 90ms; }
+.lift { transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), border-color 180ms ease; }
+@media (hover: hover) and (pointer: fine) {
+  .lift:hover { transform: translateY(-2px); border-color: var(--line-strong); }
+}
+
+/* The page band and the Home hero stay dark in both themes, so their controls read dark tokens. */
+.page-sky,
+.force-dark {
+  --canvas: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #141414;
+  --ink: #ffffff;
+  --ink-2: #a1a1a1;
+  --ink-3: #6e6e6e;
+  --line: #1f1f1f;
+  --line-strong: #383838;
+  --accent: #ffffff;
+  --accent-hover: #e4e4e4;
+  --accent-ink: #000000;
+  color-scheme: dark;
+}
+
+/* Run canvas: a dark design-tool ground with a faint dot grid, and agent cursors that roam their frame. */
+.canvas-ground {
+  background-color: #1b1b1b;
+  background-image: radial-gradient(rgb(255 255 255 / 0.07) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.agent-cursor {
+  left: 14%;
+  top: 18%;
+  animation-name: cursor-roam;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
+}
+@keyframes cursor-roam {
+  0% { left: 14%; top: 18%; }
+  22% { left: 52%; top: 46%; }
+  41% { left: 68%; top: 14%; }
+  63% { left: 40%; top: 70%; }
+  82% { left: 10%; top: 56%; }
+  100% { left: 14%; top: 18%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-cursor { animation: none; }
+}
+
+/* Advanced workspace: terminal cursor on live panes. */
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.cursor-blink {
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cursor-blink {
+    animation: none;
+  }
+}

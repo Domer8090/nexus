@@ -1,0 +1,558 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bell, Copy, Columns2, Grid2x2, RotateCcw, Square, SquareTerminal, X } from "lucide-react";
+import { api, useApi } from "@/lib/client";
+import { cx } from "@/components/ui";
+import { useWorkspace } from "@/components/workspace-context";
+import type { AgentEvent, Session } from "@/lib/types";
+
+/**
+ * Advanced workspace, in the spirit of terminal multiplexers built for agents: vertical tabs for every
+ * session, up to four split panes, each pane the agent's live terminal (Nexus events or the raw
+ * process output), with the exact command, folder, branch, pid and process tree. Rings mark
+ * sessions that need you: failed, or finished since you last looked.
+ */
+
+type ProcRow = { pid: number; ppid: number; cpu: number; rssMb: number; elapsed: string; args: string; depth: number };
+type AdvSession = Session & { pid: number | null; procs: ProcRow[]; resume: string | null };
+type RawLine = { n: number; at: string; stream: "out" | "err"; line: string };
+type Log = { events: AgentEvent[]; raw: RawLine[]; loaded: boolean };
+
+const LIVE = ["running", "starting", "queued"];
+const LAYOUTS = [1, 2, 4] as const;
+const SEEN_KEY = "nexus.advanced.seen";
+const LAYOUT_KEY = "nexus.advanced.layout";
+const CAP = 3000;
+
+const store = {
+  get<T>(k: string, d: T): T {
+    try {
+      const v = window.localStorage.getItem(k);
+      return v ? (JSON.parse(v) as T) : d;
+    } catch {
+      return d;
+    }
+  },
+  set(k: string, v: unknown) {
+    try {
+      window.localStorage.setItem(k, JSON.stringify(v));
+    } catch {}
+  },
+};
+
+function elapsed(s: Session, now: number) {
+  if (!s.startedAt) return "";
+  const ms = (s.endedAt ? Date.parse(s.endedAt) : now) - Date.parse(s.startedAt);
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+function dotClass(s: Session) {
+  if (s.status === "running" || s.status === "starting") return "bg-ok live-dot";
+  if (s.status === "queued") return "bg-ink-3";
+  if (s.status === "failed") return "bg-bad";
+  if (s.status === "cancelled") return "bg-ink-3";
+  return "bg-[#9ec9f7]";
+}
+
+const KIND: Record<string, { mark: string; cls: string }> = {
+  tool: { mark: "$", cls: "text-[#9ec9f7]" },
+  "tool-result": { mark: "<", cls: "text-[#f5a08b]" },
+  file: { mark: "+", cls: "text-ok" },
+  text: { mark: " ", cls: "text-ink" },
+  thinking: { mark: "~", cls: "text-ink-3 italic" },
+  status: { mark: ">", cls: "text-[#caa8f7]" },
+  system: { mark: "#", cls: "text-ink-2" },
+  usage: { mark: "=", cls: "text-ink-3" },
+  stderr: { mark: "!", cls: "text-warn" },
+  error: { mark: "x", cls: "text-bad" },
+};
+
+function useLogs(sessions: AdvSession[] | undefined) {
+  const logs = useRef(new Map<string, Log>());
+  const [, setTick] = useState(0);
+  const dirty = useRef(false);
+  const [liveOk, setLiveOk] = useState(true);
+  const statusRef = useRef(new Map<string, string>());
+  const [notify, setNotify] = useState(false);
+
+  const log = (id: string) => {
+    let l = logs.current.get(id);
+    if (!l) {
+      l = { events: [], raw: [], loaded: false };
+      logs.current.set(id, l);
+    }
+    return l;
+  };
+
+  useEffect(() => {
+    const es = new EventSource("/api/advanced/stream");
+    es.addEventListener("open", () => setLiveOk(true));
+    es.addEventListener("error", () => setLiveOk(false));
+    es.addEventListener("agent", (m) => {
+      const e = JSON.parse((m as MessageEvent).data) as AgentEvent;
+      const l = log(e.sessionId);
+      if (l.events.length && l.events[l.events.length - 1].id >= e.id) return;
+      l.events.push(e);
+      if (l.events.length > CAP) l.events.splice(0, l.events.length - CAP);
+      dirty.current = true;
+    });
+    es.addEventListener("raw", (m) => {
+      const r = JSON.parse((m as MessageEvent).data) as RawLine & { sessionId: string };
+      const l = log(r.sessionId);
+      if (l.raw.length && l.raw[l.raw.length - 1].n >= r.n) return;
+      l.raw.push(r);
+      if (l.raw.length > CAP) l.raw.splice(0, l.raw.length - CAP);
+      dirty.current = true;
+    });
+    es.addEventListener("session", (m) => {
+      const s = JSON.parse((m as MessageEvent).data) as Session;
+      const before = statusRef.current.get(s.id);
+      statusRef.current.set(s.id, s.status);
+      if (before && before !== s.status && (s.status === "completed" || s.status === "failed") && notify && typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(s.status === "failed" ? `${s.title} failed` : `${s.title} finished`, { body: s.error ?? s.summary?.slice(0, 140) ?? s.agentId });
+        } catch {}
+      }
+      dirty.current = true;
+    });
+    const t = setInterval(() => {
+      if (dirty.current) {
+        dirty.current = false;
+        setTick((n) => n + 1);
+      }
+    }, 150);
+    return () => {
+      clearInterval(t);
+      es.close();
+    };
+  }, [notify]);
+
+  useEffect(() => {
+    for (const s of sessions ?? []) if (!statusRef.current.has(s.id)) statusRef.current.set(s.id, s.status);
+  }, [sessions]);
+
+  const load = useCallback(async (id: string) => {
+    const l = log(id);
+    if (l.loaded) return;
+    l.loaded = true;
+    try {
+      const d = await api<{ events: AgentEvent[]; raw: RawLine[] }>(`/api/advanced/log?id=${encodeURIComponent(id)}`);
+      const ids = new Set(l.events.map((e) => e.id));
+      const ns = new Set(l.raw.map((r) => r.n));
+      l.events = [...d.events.filter((e) => !ids.has(e.id)), ...l.events].sort((a, b) => a.id - b.id);
+      l.raw = [...d.raw.filter((r) => !ns.has(r.n)), ...l.raw].sort((a, b) => a.n - b.n);
+      setTick((n) => n + 1);
+    } catch {
+      l.loaded = false;
+    }
+  }, []);
+
+  return { get: (id: string) => logs.current.get(id), load, liveOk, notify, setNotify };
+}
+
+function Pane({
+  s,
+  log,
+  load,
+  focused,
+  onFocus,
+  onClose,
+  now,
+  agentName,
+  index,
+}: {
+  s: AdvSession | null;
+  log: Log | undefined;
+  load: (id: string) => void;
+  focused: boolean;
+  onFocus: () => void;
+  onClose: () => void;
+  now: number;
+  agentName: (id: string) => string;
+  index: number;
+}) {
+  const [view, setView] = useState<"events" | "raw">("events");
+  const [showProcs, setShowProcs] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const id = s?.id;
+
+  useEffect(() => {
+    if (id) load(id);
+  }, [id, load]);
+
+  const lines = view === "events" ? log?.events.length ?? 0 : log?.raw.length ?? 0;
+  useEffect(() => {
+    const el = body.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [lines, view, id]);
+
+  const act = async (fn: () => Promise<unknown>, ok: string) => {
+    try {
+      await fn();
+      setMsg(ok);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+    setTimeout(() => setMsg(null), 2500);
+  };
+
+  const copy = (text: string, ok: string) => act(() => navigator.clipboard.writeText(text), ok);
+
+  if (!s)
+    return (
+      <section onMouseDown={onFocus} aria-label={`Pane ${index + 1}, empty`} className={cx("flex min-h-0 flex-col items-center justify-center rounded-md border bg-[#0b0b0b] text-[15px] text-ink-3", focused ? "border-[#4c8dff]" : "border-line")}>
+        Pick a session on the left to show it here.
+      </section>
+    );
+
+  const live = LIVE.includes(s.status);
+  const cmd = s.command.join(" ");
+  return (
+    <section
+      onMouseDown={onFocus}
+      aria-label={`Pane ${index + 1}: ${s.title}`}
+      className={cx("flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border bg-[#0b0b0b]", focused ? "border-[#4c8dff] shadow-[0_0_0_1px_#4c8dff]" : s.status === "failed" ? "border-bad" : "border-line")}
+    >
+      <header className="flex items-center gap-2 border-b border-line px-3 py-2">
+        <span className={cx("size-2 shrink-0 rounded-full", dotClass(s))} aria-hidden />
+        <h2 className="min-w-0 truncate text-[15px] font-medium text-ink" title={s.brief.slice(0, 400)}>
+          {s.title}
+        </h2>
+        <span className="shrink-0 font-mono text-[13px] text-ink-3">
+          {agentName(s.agentId)}
+          {s.model ? ` ${s.model}` : ""}
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[13px] text-ink-2">
+          {s.status}
+          {s.startedAt ? ` ${elapsed(s, now)}` : ""}
+          {s.pid ? ` pid ${s.pid}` : ""}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          {live ? (
+            <IconBtn label="Stop this session" onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "cancel" } }), "Stopping.")}>
+              <Square size={14} />
+            </IconBtn>
+          ) : (s.status === "failed" || s.status === "cancelled") && (
+            <IconBtn label="Run this session again" onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "retry" } }), "Queued again.")}>
+              <RotateCcw size={14} />
+            </IconBtn>
+          )}
+          <IconBtn label="Open Terminal in this session's folder" onClick={() => act(() => api("/api/advanced/open", { body: { sessionId: s.id } }), "Opened Terminal.")}>
+            <SquareTerminal size={15} />
+          </IconBtn>
+          <IconBtn label="Close pane" onClick={onClose}>
+            <X size={15} />
+          </IconBtn>
+        </div>
+      </header>
+
+      <div className="flex items-center gap-1 border-b border-line px-2 py-1 font-mono text-[13px]">
+        {(["events", "raw"] as const).map((v) => (
+          <button key={v} type="button" onClick={() => setView(v)} aria-pressed={view === v} className={cx("whitespace-nowrap rounded px-2 py-0.5", view === v ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
+            {v === "events" ? "Steps" : "Raw output"}
+          </button>
+        ))}
+        <span className="ml-auto min-w-0 truncate text-ink-3" title={s.cwd}>
+          {s.worktreeBranch ?? "no branch"} {s.cwd}
+        </span>
+      </div>
+
+      <div
+        ref={body}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        }}
+        className="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-[1.55]"
+        role="log"
+        aria-live={focused ? "polite" : "off"}
+      >
+        {view === "events"
+          ? (log?.events ?? []).map((e) => {
+              const k = KIND[e.kind] ?? KIND.system;
+              return (
+                <div key={e.id} className={cx("flex gap-2 whitespace-pre-wrap break-words", k.cls)}>
+                  <span className="w-3 shrink-0 select-none text-ink-3">{k.mark}</span>
+                  <span className="min-w-0">{e.text}</span>
+                </div>
+              );
+            })
+          : (log?.raw ?? []).map((r) => (
+              <div key={r.n} className={cx("whitespace-pre-wrap break-all", r.stream === "err" ? "text-warn" : "text-ink-2")}>
+                {r.line}
+              </div>
+            ))}
+        {!lines && <p className="text-ink-3">{view === "raw" ? (s.agentId === "ollama" ? "Ollama runs as a local server, so there is no process output to show. Steps shows its stream." : "No raw output in memory. Nexus keeps it only while it runs, until it restarts.") : "No output yet."}</p>}
+        {live && <span className="cursor-blink inline-block h-[1.05em] w-[0.55em] translate-y-[2px] bg-ink-2" aria-hidden />}
+      </div>
+
+      <footer className="border-t border-line px-3 py-2 font-mono text-[13px]">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-ink-3">cmd</span>
+          <code className="min-w-0 flex-1 truncate text-ink-2" title={cmd}>
+            {cmd || "Not started yet."}
+          </code>
+          {cmd && (
+            <IconBtn label="Copy command" onClick={() => copy(cmd, "Command copied.")}>
+              <Copy size={13} />
+            </IconBtn>
+          )}
+        </div>
+        {s.resume && (
+          <div className="mt-1 flex items-center gap-2">
+            <span className="shrink-0 text-ink-3">resume</span>
+            <code className="min-w-0 flex-1 truncate text-ink-2" title={s.resume}>
+              {s.resume}
+            </code>
+            <IconBtn label="Copy resume command" onClick={() => copy(s.resume!, "Resume command copied. Paste it in your terminal.")}>
+              <Copy size={13} />
+            </IconBtn>
+          </div>
+        )}
+        {s.procs.length > 0 && (
+          <div className="mt-1">
+            <button type="button" onClick={() => setShowProcs(!showProcs)} aria-expanded={showProcs} className="text-ink-3 hover:text-ink">
+              processes ({s.procs.length})
+            </button>
+            {showProcs && (
+              <ul className="mt-1 max-h-28 overflow-y-auto">
+                {s.procs.map((p) => (
+                  <li key={p.pid} className="flex gap-2 whitespace-nowrap text-ink-2" title={p.args}>
+                    <span className="w-14 shrink-0 text-right text-ink-3">{p.pid}</span>
+                    <span className="w-12 shrink-0 text-right">{p.cpu.toFixed(1)}%</span>
+                    <span className="w-14 shrink-0 text-right">{p.rssMb} MB</span>
+                    <span className="min-w-0 truncate" style={{ paddingLeft: `${p.depth * 12}px` }}>
+                      {p.depth ? "└ " : ""}
+                      {p.args}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {(msg || s.error) && <p className={cx("mt-1 truncate", msg ? "text-ink" : "text-bad")}>{msg ?? s.error}</p>}
+      </footer>
+    </section>
+  );
+}
+
+function IconBtn({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-7 place-items-center rounded text-ink-3 hover:bg-[#1f1f1f] hover:text-ink">
+      {children}
+    </button>
+  );
+}
+
+export function AdvancedView() {
+  const { agents } = useWorkspace();
+  const { data, error } = useApi<{ sessions: AdvSession[] }>("/api/advanced", { interval: 2500 });
+  const sessions = useMemo(() => data?.sessions ?? [], [data]);
+  const logs = useLogs(data?.sessions);
+  const [count, setCount] = useState<(typeof LAYOUTS)[number]>(2);
+  const [panes, setPanes] = useState<(string | null)[]>([null, null, null, null]);
+  const [focus, setFocus] = useState(0);
+  const [seen, setSeen] = useState<Record<string, string> | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [filter, setFilter] = useState("");
+  const filled = useRef(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCount(store.get(LAYOUT_KEY, 2));
+    setSeen(store.get<Record<string, string> | null>(SEEN_KEY, null));
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // First load: fill the panes with what is running, then the most recent sessions.
+  useEffect(() => {
+    if (filled.current || !sessions.length) return;
+    filled.current = true;
+    const order = [...sessions.filter((s) => LIVE.includes(s.status)), ...sessions.filter((s) => !LIVE.includes(s.status))];
+    setPanes([0, 1, 2, 3].map((i) => order[i]?.id ?? null));
+  }, [sessions]);
+
+  const shown = useMemo(() => new Set(panes.slice(0, count).filter(Boolean) as string[]), [panes, count]);
+
+  // Anything on screen counts as seen. On the first visit, everything that already ended counts as seen.
+  useEffect(() => {
+    if (!sessions.length) return;
+    const first = !seen || !Object.keys(seen).length;
+    let changed = false;
+    const next = { ...seen };
+    for (const s of sessions) {
+      if ((first || shown.has(s.id)) && s.endedAt && next[s.id] !== s.endedAt) {
+        next[s.id] = s.endedAt;
+        changed = true;
+      }
+    }
+    if (changed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSeen(next);
+      store.set(SEEN_KEY, next);
+    }
+  }, [sessions, shown, seen]);
+
+  const needsYou = (s: Session) => !shown.has(s.id) && !!seen && !!s.endedAt && seen[s.id] !== s.endedAt && (s.status === "failed" || s.status === "completed");
+  const unread = sessions.filter(needsYou).length;
+  useEffect(() => {
+    document.title = unread ? `(${unread}) Advanced · Nexus` : "Advanced · Nexus";
+  }, [unread]);
+
+  const visible = useMemo(() => {
+    const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
+    return sessions.filter((s) => {
+      const hay = `${s.title} ${s.agentId} ${s.status} ${s.worktreeBranch ?? ""} ${s.cwd}`.toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  }, [sessions, filter]);
+
+  const put = useCallback(
+    (id: string) => {
+      setPanes((p) => {
+        const n = [...p];
+        const at = n.indexOf(id);
+        if (at >= 0 && at < count) {
+          setFocus(at);
+          return n;
+        }
+        n[focus] = id;
+        return n;
+      });
+    },
+    [focus, count],
+  );
+
+  const setLayout = (c: (typeof LAYOUTS)[number]) => {
+    setCount(c);
+    store.set(LAYOUT_KEY, c);
+    if (focus >= c) setFocus(0);
+  };
+
+  // Keyboard: Ctrl or Cmd + 1-9 opens that tab in the focused pane; Ctrl/Cmd + ] and [ move focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const d = Number(e.key);
+      if (d >= 1 && d <= 9 && visible[d - 1]) {
+        e.preventDefault();
+        put(visible[d - 1].id);
+      } else if (e.key === "]" || e.key === "[") {
+        e.preventDefault();
+        setFocus((f) => (f + (e.key === "]" ? 1 : count - 1)) % count);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, put, count]);
+
+  const agentName = (id: string) => agents.find((a) => a.id === id)?.displayName ?? id;
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const running = sessions.filter((s) => s.status === "running" || s.status === "starting").length;
+
+  return (
+    <div className="force-dark -mx-3 -mt-5 -mb-24 flex h-[calc(100dvh-52px)] min-h-[520px] bg-canvas text-ink sm:-mx-4 lg:-mx-6">
+      <aside aria-label="Sessions" className="flex w-72 shrink-0 flex-col border-r border-line">
+        <div className="p-2">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter sessions"
+            aria-label="Filter sessions"
+            className="h-10 w-full rounded-md border border-line bg-[#0b0b0b] px-3 text-[14px] text-ink placeholder:text-ink-3 focus:border-line-strong focus:outline-none"
+          />
+        </div>
+        <ul className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {visible.map((s, i) => {
+            const on = shown.has(s.id);
+            const ring = needsYou(s);
+            return (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  onClick={() => put(s.id)}
+                  aria-current={on ? "true" : undefined}
+                  className={cx("relative mb-1 block w-full rounded-md border px-3 py-2 text-left", on ? "border-[#4c8dff] bg-[#0f1a2e]" : ring ? (s.status === "failed" ? "border-bad" : "border-[#9ec9f7]") : "border-transparent hover:bg-[#141414]")}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={cx("size-2 shrink-0 rounded-full", dotClass(s), ring && "ring-2 ring-current ring-offset-2 ring-offset-canvas")} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate text-[14px] font-medium">{s.title}</span>
+                    {i < 9 && <kbd className="shrink-0 font-mono text-[12px] text-ink-3">⌘{i + 1}</kbd>}
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-[12.5px] text-ink-3">
+                    {agentName(s.agentId)} {s.status} {elapsed(s, now)}
+                  </span>
+                  <span className="block truncate font-mono text-[12.5px] text-ink-3">{s.worktreeBranch ?? s.cwd.split("/").pop()}</span>
+                  {ring && <span className="sr-only">Needs you: {s.status}</span>}
+                </button>
+              </li>
+            );
+          })}
+          {!visible.length && <li className="px-2 py-6 text-[14px] text-ink-3">{error ?? (sessions.length ? "No session matches." : "No sessions yet. Start one from the Playground.")}</li>}
+        </ul>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+          <span className="font-mono text-[14px] text-ink-2">
+            <span className={cx("mr-2 inline-block size-2 rounded-full", running ? "bg-ok live-dot" : "bg-ink-3")} aria-hidden />
+            {running} running{unread ? `, ${unread} need you` : ""}
+            {!logs.liveOk && <span className="ml-2 text-warn">live stream reconnecting</span>}
+          </span>
+          <div className="ml-auto flex items-center gap-1" role="group" aria-label="Panes">
+            {LAYOUTS.map((c) => (
+              <button key={c} type="button" onClick={() => setLayout(c)} aria-pressed={count === c} aria-label={`${c} pane${c > 1 ? "s" : ""}`} title={`${c} pane${c > 1 ? "s" : ""}`} className={cx("grid size-8 place-items-center rounded", count === c ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
+                {c === 1 ? <Square size={15} /> : c === 2 ? <Columns2 size={15} /> : <Grid2x2 size={15} />}
+              </button>
+            ))}
+            <button
+              type="button"
+              aria-pressed={logs.notify}
+              title="Desktop notification when a session finishes or fails"
+              onClick={async () => {
+                if (typeof Notification === "undefined") return;
+                if (!logs.notify && Notification.permission !== "granted") await Notification.requestPermission();
+                logs.setNotify(!logs.notify && Notification.permission === "granted");
+              }}
+              className={cx("ml-1 inline-flex h-8 items-center gap-1.5 rounded px-2 text-[14px]", logs.notify ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}
+            >
+              <Bell size={15} aria-hidden /> {logs.notify ? "Notifying" : "Notify me"}
+            </button>
+            <Link href="/runs" className="ml-1 inline-flex h-8 items-center rounded px-2 text-[14px] text-ink-3 hover:text-ink">
+              Simple view
+            </Link>
+          </div>
+        </div>
+        <div className={cx("grid min-h-0 flex-1 gap-2 p-2", count === 1 ? "grid-cols-1" : count === 2 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-2 md:grid-rows-2")}>
+          {panes.slice(0, count).map((id, i) => {
+            const s = id ? byId.get(id) ?? null : null;
+            return (
+              <Pane
+                key={i}
+                index={i}
+                s={s}
+                log={s ? logs.get(s.id) : undefined}
+                load={logs.load}
+                focused={focus === i}
+                onFocus={() => setFocus(i)}
+                onClose={() => setPanes((p) => p.map((x, j) => (j === i ? null : x)))}
+                now={now}
+                agentName={agentName}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
