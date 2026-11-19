@@ -1,5 +1,6 @@
 "use client";
 
+import { Picker } from "@/components/picker";
 import { useState } from "react";
 import { Download, ShieldCheck, Trash2 } from "lucide-react";
 import { Button, Dialog, Field, PageHeader, Segmented, Spinner, Toast, cx, inputClass } from "@/components/ui";
@@ -108,30 +109,31 @@ export function SettingsView() {
               <input id="conc" type="range" min={1} max={8} value={st.concurrency} onChange={(e) => patch({ concurrency: Number(e.target.value) })} className="accent-[var(--accent)]" />
             </Field>
             <Field label="Local model for brief refinement and reviews" htmlFor="olm" hint={ollama?.models.length ? "Runs on Ollama on this machine." : "Start Ollama and pull a model to use this."}>
-              <select id="olm" value={st.ollamaModel ?? ""} onChange={(e) => patch({ ollamaModel: e.target.value || null })} className={inputClass} disabled={!ollama?.models.length}>
-                <option value="">First available model</option>
-                {ollama?.models.map((m) => (
-                  <option key={m}>{m}</option>
-                ))}
-              </select>
+              <Picker id="olm" label="Local model" disabled={!ollama?.models.length} className="font-mono" value={st.ollamaModel ?? ""} onChange={(v) => patch({ ollamaModel: v || null })} options={[{ value: "", label: "First available model" }, ...(ollama?.models ?? []).map((m) => ({ value: m, label: m }))]} />
             </Field>
             <Field label="Default Claude Code model" htmlFor="ccm" hint="Aliases resolve to the latest model your plan allows.">
-              <select id="ccm" value={st.claudeModel ?? ""} onChange={(e) => patch({ claudeModel: e.target.value || null })} className={inputClass}>
-                <option value="">Picked for each job (Opus builds, Sonnet the rest)</option>
-                <option value="opus">Opus</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="haiku">Haiku</option>
-              </select>
+              <Picker
+                id="ccm"
+                label="Default Claude Code model"
+                value={st.claudeModel ?? ""}
+                onChange={(v) => patch({ claudeModel: v || null })}
+                options={[
+                  { value: "", label: "Picked for each job", hint: "Opus builds, Sonnet the rest" },
+                  { value: "opus", label: "Opus" },
+                  { value: "sonnet", label: "Sonnet" },
+                  { value: "haiku", label: "Haiku" },
+                ]}
+              />
             </Field>
             <Field label="Default Codex model" htmlFor="cxm" hint={codexModels.length ? "From Codex's own model list for your ChatGPT account." : "Codex hasn't listed its models yet. Run any Codex session once."}>
-              <select id="cxm" value={st.codexModel ?? ""} onChange={(e) => patch({ codexModel: e.target.value || null })} className={inputClass} disabled={!codexModels.length}>
-                <option value="">Picked for each job (first in Codex&apos;s list)</option>
-                {codexModels.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}: {m.description}
-                  </option>
-                ))}
-              </select>
+              <Picker
+                id="cxm"
+                label="Default Codex model"
+                disabled={!codexModels.length}
+                value={st.codexModel ?? ""}
+                onChange={(v) => patch({ codexModel: v || null })}
+                options={[{ value: "", label: "Picked for each job", hint: "First in Codex's list" }, ...codexModels.map((m) => ({ value: m.id, label: m.label, hint: m.description }))]}
+              />
             </Field>
             <label className="flex items-start gap-2.5 text-[13px]">
               <input type="checkbox" className="mt-0.5 size-4 accent-[var(--accent)]" checked={st.projectMap} onChange={(e) => patch({ projectMap: e.target.checked })} />

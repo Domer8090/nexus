@@ -12,13 +12,13 @@ import { run } from "./proc";
 
 export const MAP_FILE = "NEXUS_MAP.md";
 const MAX_BYTES = 48_000;
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "out", "coverage", ".turbo", ".vercel", "vendor", "target", "__pycache__", ".venv", "venv", ".cache"]);
-const TEXT = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|php|vue|svelte|astro|css|scss|html?|md|mdx|json|ya?ml|toml|sql|sh|graphql|prisma)$/i;
-const LOCK = /(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|\.min\.(js|css))$/;
+export const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "out", "coverage", ".turbo", ".vercel", "vendor", "target", "__pycache__", ".venv", "venv", ".cache"]);
+export const TEXT = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|php|vue|svelte|astro|css|scss|html?|md|mdx|json|ya?ml|toml|sql|sh|graphql|prisma)$/i;
+export const LOCK = /(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|\.min\.(js|css))$/;
 
 export type MapResult = { text: string; files: number; bytes: number; truncated: boolean };
 
-async function listFiles(dir: string): Promise<string[]> {
+export async function listFiles(dir: string): Promise<string[]> {
   const git = await run("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: dir, timeoutMs: 20_000 });
   if (git.code === 0 && git.stdout.trim()) return git.stdout.split("\n").filter(Boolean);
   const out: string[] = [];

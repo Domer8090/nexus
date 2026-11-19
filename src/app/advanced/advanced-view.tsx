@@ -1,9 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppWindow, Bell, Copy, Columns2, ExternalLink, Grid2x2, ImagePlus, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppWindow, Bell, Copy, Columns2, ExternalLink, Grid2x2, ImagePlus, Map as MapIcon, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
 import { api, useApi } from "@/lib/client";
+import { flyPaper } from "./fly-paper";
+import { ConceptMap } from "./concept-map";
+import { loadBacklog, subscribeLive, type RawLine } from "@/lib/live";
 import { cx } from "@/components/ui";
 import { useWorkspace } from "@/components/workspace-context";
 import type { AgentEvent, Session } from "@/lib/types";
@@ -17,7 +20,6 @@ import type { AgentEvent, Session } from "@/lib/types";
 
 type ProcRow = { pid: number; ppid: number; cpu: number; rssMb: number; elapsed: string; args: string; depth: number };
 type AdvSession = Session & { pid: number | null; procs: ProcRow[]; resume: string | null };
-type RawLine = { n: number; at: string; stream: "out" | "err"; line: string };
 type Log = { events: AgentEvent[]; raw: RawLine[]; loaded: boolean };
 type ViewResp = { url: string | null; entry: string | null; devCommand: string | null; framework: string | null; path: string; version: number; error?: string };
 const DEVICES = { desktop: { w: 0, h: 0, icon: Monitor, label: "Desktop" }, tablet: { w: 820, h: 1180, icon: Tablet, label: "iPad" }, phone: { w: 390, h: 844, icon: Smartphone, label: "iPhone" } } as const;
@@ -53,6 +55,18 @@ function elapsed(s: Session, now: number) {
   const m = Math.floor((t % 3600) / 60);
   const sec = t % 60;
   return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+/** Ticking elapsed time, re-rendering only itself once a second while the session runs. */
+function Elapsed({ s }: { s: Session }) {
+  const [now, setNow] = useState(() => Date.now());
+  const running = !s.endedAt && !!s.startedAt;
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  return <>{elapsed(s, now)}</>;
 }
 
 function dotClass(s: Session) {
@@ -93,37 +107,49 @@ function useLogs(sessions: AdvSession[] | undefined) {
     return l;
   };
 
+  const notifyRef = useRef(notify);
   useEffect(() => {
-    const es = new EventSource("/api/advanced/stream");
-    es.addEventListener("open", () => setLiveOk(true));
-    es.addEventListener("error", () => setLiveOk(false));
-    es.addEventListener("agent", (m) => {
-      const e = JSON.parse((m as MessageEvent).data) as AgentEvent;
-      const l = log(e.sessionId);
-      if (l.events.length && l.events[l.events.length - 1].id >= e.id) return;
-      l.events.push(e);
-      if (l.events.length > CAP) l.events.splice(0, l.events.length - CAP);
-      dirty.current = true;
+    notifyRef.current = notify;
+  }, [notify]);
+  const versions = useRef(new Map<string, number>());
+  const bump = (id: string) => {
+    versions.current.set(id, (versions.current.get(id) ?? 0) + 1);
+    dirty.current = true;
+  };
+
+  useEffect(() => {
+    const off = subscribeLive({
+      onState: setLiveOk,
+      onEvent: (e) => {
+        const l = log(e.sessionId);
+        if (l.events.length && l.events[l.events.length - 1].id >= e.id) return;
+        l.events.push(e);
+        if (l.events.length > CAP) l.events.splice(0, l.events.length - CAP);
+        bump(e.sessionId);
+      },
+      onRaw: (r) => {
+        const l = log(r.sessionId);
+        if (l.raw.length && l.raw[l.raw.length - 1].n >= r.n) return;
+        l.raw.push(r);
+        if (l.raw.length > CAP) l.raw.splice(0, l.raw.length - CAP);
+        bump(r.sessionId);
+      },
+      onSession: (s) => {
+        const before = statusRef.current.get(s.id);
+        statusRef.current.set(s.id, s.status);
+        if (before && before !== s.status && (s.status === "completed" || s.status === "failed") && notifyRef.current && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            new Notification(s.status === "failed" ? `${s.title} failed` : `${s.title} finished`, { body: s.error ?? s.summary?.slice(0, 140) ?? s.agentId });
+          } catch {}
+        }
+      },
+      // Anything missed while the stream was down: reload the backlog of panes already open.
+      onReconnect: () => {
+        for (const l of logs.current.values()) l.loaded = false;
+        setTick((n) => n + 1);
+      },
     });
-    es.addEventListener("raw", (m) => {
-      const r = JSON.parse((m as MessageEvent).data) as RawLine & { sessionId: string };
-      const l = log(r.sessionId);
-      if (l.raw.length && l.raw[l.raw.length - 1].n >= r.n) return;
-      l.raw.push(r);
-      if (l.raw.length > CAP) l.raw.splice(0, l.raw.length - CAP);
-      dirty.current = true;
-    });
-    es.addEventListener("session", (m) => {
-      const s = JSON.parse((m as MessageEvent).data) as Session;
-      const before = statusRef.current.get(s.id);
-      statusRef.current.set(s.id, s.status);
-      if (before && before !== s.status && (s.status === "completed" || s.status === "failed") && notify && typeof Notification !== "undefined" && Notification.permission === "granted") {
-        try {
-          new Notification(s.status === "failed" ? `${s.title} failed` : `${s.title} finished`, { body: s.error ?? s.summary?.slice(0, 140) ?? s.agentId });
-        } catch {}
-      }
-      dirty.current = true;
-    });
+    // One render for all panes at most every 150 ms, however fast lines arrive.
     const t = setInterval(() => {
       if (dirty.current) {
         dirty.current = false;
@@ -132,9 +158,9 @@ function useLogs(sessions: AdvSession[] | undefined) {
     }, 150);
     return () => {
       clearInterval(t);
-      es.close();
+      off();
     };
-  }, [notify]);
+  }, []);
 
   useEffect(() => {
     for (const s of sessions ?? []) if (!statusRef.current.has(s.id)) statusRef.current.set(s.id, s.status);
@@ -145,46 +171,60 @@ function useLogs(sessions: AdvSession[] | undefined) {
     if (l.loaded) return;
     l.loaded = true;
     try {
-      const d = await api<{ events: AgentEvent[]; raw: RawLine[] }>(`/api/advanced/log?id=${encodeURIComponent(id)}`);
+      const d = await loadBacklog(id);
       const ids = new Set(l.events.map((e) => e.id));
       const ns = new Set(l.raw.map((r) => r.n));
       l.events = [...d.events.filter((e) => !ids.has(e.id)), ...l.events].sort((a, b) => a.id - b.id);
       l.raw = [...d.raw.filter((r) => !ns.has(r.n)), ...l.raw].sort((a, b) => a.n - b.n);
+      bump(id);
       setTick((n) => n + 1);
     } catch {
       l.loaded = false;
     }
   }, []);
 
-  return { get: (id: string) => logs.current.get(id), load, liveOk, notify, setNotify };
+  return { get: (id: string) => logs.current.get(id), version: (id: string) => versions.current.get(id) ?? 0, load, liveOk, notify, setNotify };
 }
 
-function Pane({
+type PaneProps = {
+  s: AdvSession | null;
+  log: Log | undefined;
+  version: number;
+  load: (id: string) => void;
+  focused: boolean;
+  onFocus: (i: number) => void;
+  onClose: (i: number) => void;
+  agentName: (id: string) => string;
+  index: number;
+  onOpen: (i: number, id: string) => void;
+  /** One or two panes: room to open the app preview beside the terminal by itself. */
+  roomy: boolean;
+};
+
+/** Re-render a pane only when its own session or output changed, not on every poll or keystroke elsewhere. */
+const Pane = memo(PaneInner, (a, b) => {
+  for (const k of ["log", "version", "load", "focused", "onFocus", "onClose", "agentName", "index", "onOpen", "roomy"] as const) if (a[k] !== b[k]) return false;
+  return a.s === b.s || (!!a.s && !!b.s && JSON.stringify(a.s) === JSON.stringify(b.s));
+});
+
+const WINDOW = 500;
+
+function PaneInner({
   s,
   log,
   load,
   focused,
-  onFocus,
-  onClose,
-  now,
+  onFocus: focusAt,
+  onClose: closeAt,
   agentName,
   index,
-  onOpen,
+  onOpen: openAt,
   roomy,
-}: {
-  s: AdvSession | null;
-  log: Log | undefined;
-  load: (id: string) => void;
-  focused: boolean;
-  onFocus: () => void;
-  onClose: () => void;
-  now: number;
-  agentName: (id: string) => string;
-  index: number;
-  onOpen: (id: string) => void;
-  /** One or two panes: room to open the app preview beside the terminal by itself. */
-  roomy: boolean;
-}) {
+}: PaneProps) {
+  const onFocus = () => focusAt(index);
+  const onClose = () => closeAt(index);
+  const onOpen = (nid: string) => openAt(index, nid);
+  const [more, setMore] = useState(0);
   const [view, setView] = useState<"events" | "raw">("events");
   const [preview, setPreview] = useState<boolean | null>(null);
   const [device, setDevice] = useState<Device>("desktop");
@@ -240,7 +280,7 @@ function Pane({
 
   if (!s)
     return (
-      <section onMouseDown={onFocus} aria-label={`Pane ${index + 1}, empty`} className={cx("flex min-h-0 flex-col items-center justify-center rounded-md border bg-[#0b0b0b] text-[15px] text-ink-3", focused ? "border-[#4c8dff]" : "border-line")}>
+      <section onMouseDown={onFocus} data-pane-focused={focused || undefined} aria-label={`Pane ${index + 1}, empty`} className={cx("flex min-h-0 flex-col items-center justify-center rounded-md border bg-[#0b0b0b] text-[15px] text-ink-3", focused ? "border-[#4c8dff]" : "border-line")}>
         Pick a session on the left to show it here.
       </section>
     );
@@ -250,6 +290,7 @@ function Pane({
   return (
     <section
       onMouseDown={onFocus}
+      data-pane-focused={focused || undefined}
       aria-label={`Pane ${index + 1}: ${s.title}`}
       className={cx("flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border bg-[#0b0b0b]", focused ? "border-[#4c8dff] shadow-[0_0_0_1px_#4c8dff]" : s.status === "failed" ? "border-bad" : "border-line")}
     >
@@ -264,7 +305,8 @@ function Pane({
         </span>
         <span className="ml-auto shrink-0 font-mono text-[13px] text-ink-2">
           {s.status}
-          {s.startedAt ? ` ${elapsed(s, now)}` : ""}
+          {s.startedAt ? " " : ""}
+          {s.startedAt && <Elapsed s={s} />}
           {s.pid ? ` pid ${s.pid}` : ""}
         </span>
         <div className="flex shrink-0 items-center gap-1">
@@ -311,8 +353,13 @@ function Pane({
         role="log"
         aria-live={focused ? "polite" : "off"}
       >
+        {lines > WINDOW + more && (
+          <button type="button" onClick={() => setMore(more + 1000)} className="mb-2 rounded border border-line px-2 py-0.5 text-ink-3 hover:text-ink">
+            Show {Math.min(1000, lines - WINDOW - more)} earlier lines
+          </button>
+        )}
         {view === "events"
-          ? (log?.events ?? []).map((e) => {
+          ? (log?.events ?? []).slice(-(WINDOW + more)).map((e) => {
               const k = KIND[e.kind] ?? KIND.system;
               return (
                 <div key={e.id} className={cx("flex gap-2 whitespace-pre-wrap break-words", k.cls)}>
@@ -321,7 +368,7 @@ function Pane({
                 </div>
               );
             })
-          : (log?.raw ?? []).map((r) => (
+          : (log?.raw ?? []).slice(-(WINDOW + more)).map((r) => (
               <div key={r.n} className={cx("whitespace-pre-wrap break-all", r.stream === "err" ? "text-warn" : "text-ink-2")}>
                 {r.line}
               </div>
@@ -503,7 +550,8 @@ async function shrink(file: File): Promise<string> {
 
 type Picked = { agentName: string; model: string | null; why: string; by: "ollama" | "rules" };
 
-function AskAgents({ projectId, onStarted }: { projectId: string | null; onStarted: (id: string, pick: Picked) => void }) {
+function AskAgents({ projectId, onStarted, target }: { projectId: string | null; onStarted: (id: string, pick: Picked) => void; target: () => DOMRect | null }) {
+  const dialog = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
@@ -544,10 +592,14 @@ function AskAgents({ projectId, onStarted }: { projectId: string | null; onStart
     setErr(null);
     try {
       const r = await api<{ session: Session; pick: Picked }>("/api/advanced/ask", { body: { projectId, request: text, images } });
+      const from = dialog.current?.getBoundingClientRect();
+      const sent = text;
       onStarted(r.session.id, r.pick);
       setText("");
       setImages([]);
       setOpen(false);
+      // Let the pane switch to the new session first, then fly the request to it.
+      if (from) requestAnimationFrame(() => void flyPaper(from, target(), sent, r.pick.agentName));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -569,6 +621,7 @@ function AskAgents({ projectId, onStarted }: { projectId: string | null; onStart
         <div className="fixed inset-0 z-[60] grid place-items-center p-4">
           <button type="button" aria-label="Close" className="absolute inset-0 bg-[rgb(0_0_0/0.6)]" onClick={() => setOpen(false)} />
           <div
+            ref={dialog}
             role="dialog"
             aria-modal="true"
             aria-label="Ask the agents"
@@ -631,23 +684,21 @@ function AskAgents({ projectId, onStarted }: { projectId: string | null; onStart
 export function AdvancedView() {
   const { agents, project } = useWorkspace();
   const [picked, setPicked] = useState<string | null>(null);
-  const { data, error } = useApi<{ sessions: AdvSession[] }>("/api/advanced", { interval: 2500 });
+  const { data, error } = useApi<{ sessions: AdvSession[] }>("/api/advanced", { interval: 4000 });
   const sessions = useMemo(() => data?.sessions ?? [], [data]);
   const logs = useLogs(data?.sessions);
   const [count, setCount] = useState<(typeof LAYOUTS)[number]>(2);
   const [panes, setPanes] = useState<(string | null)[]>([null, null, null, null]);
   const [focus, setFocus] = useState(0);
   const [seen, setSeen] = useState<Record<string, string> | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const [filter, setFilter] = useState("");
+  const [mode, setMode] = useState<"terminals" | "map">("terminals");
   const filled = useRef(false);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCount(store.get(LAYOUT_KEY, 2));
     setSeen(store.get<Record<string, string> | null>(SEEN_KEY, null));
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
   }, []);
 
   // First load: fill the panes with what is running, then the most recent sessions.
@@ -732,7 +783,13 @@ export function AdvancedView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, put, count]);
 
-  const agentName = (id: string) => agents.find((a) => a.id === id)?.displayName ?? id;
+  const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.displayName ?? id, [agents]);
+  const focusAt = useCallback((i: number) => setFocus(i), []);
+  const closeAt = useCallback((i: number) => setPanes((p) => p.map((x, j) => (j === i ? null : x))), []);
+  const openAt = useCallback((i: number, nid: string) => {
+    setPanes((p) => p.map((x, j) => (j === i ? nid : x)));
+    setFocus(i);
+  }, []);
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const running = sessions.filter((s) => s.status === "running" || s.status === "starting").length;
 
@@ -766,7 +823,7 @@ export function AdvancedView() {
                     {i < 9 && <kbd className="shrink-0 font-mono text-[12px] text-ink-3">⌘{i + 1}</kbd>}
                   </span>
                   <span className="mt-0.5 block truncate font-mono text-[12.5px] text-ink-3">
-                    {agentName(s.agentId)} {s.status} {elapsed(s, now)}
+                    {agentName(s.agentId)} {s.status} <Elapsed s={s} />
                   </span>
                   <span className="block truncate font-mono text-[12.5px] text-ink-3">{s.worktreeBranch ?? s.cwd.split("/").pop()}</span>
                   {ring && <span className="sr-only">Needs you: {s.status}</span>}
@@ -778,6 +835,7 @@ export function AdvancedView() {
         </ul>
         <AskAgents
           projectId={project?.id ?? null}
+          target={() => document.querySelector<HTMLElement>("[data-pane-focused]")?.getBoundingClientRect() ?? null}
           onStarted={(id, p) => {
             put(id);
             setPicked(`${p.by === "ollama" ? "Ollama picked" : "Picked"} ${p.agentName}${p.model ? ` (${p.model})` : ""}: ${p.why}`);
@@ -798,6 +856,9 @@ export function AdvancedView() {
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-1" role="group" aria-label="Panes">
+            <button type="button" onClick={() => setMode(mode === "map" ? "terminals" : "map")} aria-pressed={mode === "map"} className={cx("mr-1 inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-[14px]", mode === "map" ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
+              <MapIcon size={15} aria-hidden /> Map
+            </button>
             {LAYOUTS.map((c) => (
               <button key={c} type="button" onClick={() => setLayout(c)} aria-pressed={count === c} aria-label={`${c} pane${c > 1 ? "s" : ""}`} title={`${c} pane${c > 1 ? "s" : ""}`} className={cx("grid size-8 place-items-center rounded", count === c ? "bg-[#1f1f1f] text-ink" : "text-ink-3 hover:text-ink")}>
                 {c === 1 ? <Square size={15} /> : c === 2 ? <Columns2 size={15} /> : <Grid2x2 size={15} />}
@@ -821,7 +882,12 @@ export function AdvancedView() {
             </Link>
           </div>
         </div>
-        <div className={cx("grid min-h-0 flex-1 gap-2 p-2", count === 1 ? "grid-cols-1" : count === 2 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-2 md:grid-rows-2")}>
+        {mode === "map" && (
+          <div className="flex min-h-0 flex-1 flex-col p-2">
+            <ConceptMap projectId={project?.id ?? null} agentName={agentName} />
+          </div>
+        )}
+        <div className={cx("grid min-h-0 flex-1 gap-2 p-2", mode === "map" && "hidden", count === 1 ? "grid-cols-1" : count === 2 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-2 md:grid-rows-2")}>
           {panes.slice(0, count).map((id, i) => {
             const s = id ? byId.get(id) ?? null : null;
             return (
@@ -832,15 +898,12 @@ export function AdvancedView() {
                 log={s ? logs.get(s.id) : undefined}
                 load={logs.load}
                 focused={focus === i}
-                onFocus={() => setFocus(i)}
-                onClose={() => setPanes((p) => p.map((x, j) => (j === i ? null : x)))}
-                now={now}
+                onFocus={focusAt}
+                onClose={closeAt}
                 agentName={agentName}
                 roomy={count <= 2}
-                onOpen={(nid) => {
-                  setPanes((p) => p.map((x, j) => (j === i ? nid : x)));
-                  setFocus(i);
-                }}
+                onOpen={openAt}
+                version={s ? logs.version(s.id) : 0}
               />
             );
           })}

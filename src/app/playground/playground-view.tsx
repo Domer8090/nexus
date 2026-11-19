@@ -1,11 +1,12 @@
 "use client";
 
+import { Picker } from "@/components/picker";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Download, HelpCircle, Info, Rocket, Sparkles, Wand2 } from "lucide-react";
 import { AgentMark } from "@/components/agent-bits";
-import { Button, ConfirmDialog, Segmented, Spinner, cx, inputClass, selectClass } from "@/components/ui";
+import { Button, ConfirmDialog, Segmented, Spinner, cx, inputClass } from "@/components/ui";
 import { useWorkspace } from "@/components/workspace-context";
 import { api, useApi } from "@/lib/client";
 import { type Domain, type IntakeAnalysis, type IntakeQuestion } from "@/lib/intake";
@@ -647,13 +648,9 @@ export function PlaygroundView() {
           footer={
             <>
               {projects.length ? (
-                <select aria-label="Project folder" value={project?.id ?? ""} onChange={(e) => setProjectId(e.target.value)} className={cx(inputClass, "h-11 w-auto max-w-full py-0 font-mono text-[13px]")}>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({tidyPath(p.path)})
-                    </option>
-                  ))}
-                </select>
+                <div className="w-full max-w-sm">
+                  <Picker label="Project folder" size="lg" value={project?.id ?? ""} onChange={setProjectId} options={projects.map((p) => ({ value: p.id, label: p.name, hint: tidyPath(p.path) }))} />
+                </div>
               ) : (
                 <Link href="/projects" className="flex h-11 items-center rounded-[var(--radius-control)] border border-dashed border-line-strong px-4 text-[14px] text-accent">
                   Add a project folder first
@@ -872,42 +869,36 @@ export function PlaygroundView() {
                 <li key={t.key} title={tip} className="flex flex-wrap items-center gap-4 px-5 py-4">
                   {a && <AgentMark agent={a} size="lg" />}
                   <span className="min-w-0 flex-1 basis-40 text-[18px] font-semibold text-ink">{t.title}</span>
-                  <label className="sr-only" htmlFor={`agent-${t.key}`}>
-                    Agent for {t.title}
-                  </label>
-                  <select
-                    id={`agent-${t.key}`}
-                    value={t.agentId}
-                    disabled={choices.length < 2}
-                    onChange={(e) => {
-                      const na = agents.find((x) => x.id === e.target.value);
-                      setTasks((ts) => ts.map((x) => (x.key === t.key ? { ...x, agentId: e.target.value, model: na ? defModel(na, t.role) : null, why: `You picked ${na?.displayName}.` } : x)));
-                    }}
-                    className={cx(selectClass, "h-11 min-w-40 text-[15px]")}
-                  >
-                    {(choices.length ? choices : a ? [a] : []).map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.displayName}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="w-44">
+                    <Picker
+                      label={`Agent for ${t.title}`}
+                      size="lg"
+                      disabled={choices.length < 2}
+                      value={t.agentId}
+                      onChange={(v) => {
+                        const na = agents.find((x) => x.id === v);
+                        setTasks((ts) => ts.map((x) => (x.key === t.key ? { ...x, agentId: v, model: na ? defModel(na, t.role) : null, why: `You picked ${na?.displayName}.` } : x)));
+                      }}
+                      options={(choices.length ? choices : a ? [a] : []).map((c) => ({ value: c.id, label: c.displayName }))}
+                    />
+                  </div>
                   {a && a.models.length > 0 && (
-                    <select
-                      aria-label={`Model for ${t.title}`}
-                      value={t.model ?? ""}
-                      onChange={(e) => setTasks((ts) => ts.map((x) => (x.key === t.key ? { ...x, model: e.target.value || null } : x)))}
-                      className={cx(selectClass, "h-11 min-w-44 text-[15px]", a.kind === "local-runtime" && "font-mono")}
-                    >
-                      {a.kind !== "local-runtime" && <option value="">{a.displayName.split(" ")[0]} default</option>}
-                      {a.models.map((m) => {
-                        const info = a.modelInfo?.find((x) => x.id === m);
-                        return (
-                          <option key={m} value={m} title={info?.description}>
-                            {info ? info.label : a.kind === "local-runtime" ? m : m[0].toUpperCase() + m.slice(1)}
-                          </option>
-                        );
-                      })}
-                    </select>
+                    <div className="w-52">
+                      <Picker
+                        label={`Model for ${t.title}`}
+                        size="lg"
+                        className={a.kind === "local-runtime" ? "font-mono" : undefined}
+                        value={t.model ?? ""}
+                        onChange={(v) => setTasks((ts) => ts.map((x) => (x.key === t.key ? { ...x, model: v || null } : x)))}
+                        options={[
+                          ...(a.kind !== "local-runtime" ? [{ value: "", label: `${a.displayName.split(" ")[0]} default` }] : []),
+                          ...a.models.map((m) => {
+                            const info = a.modelInfo?.find((x) => x.id === m);
+                            return { value: m, label: info ? info.label : a.kind === "local-runtime" ? m : m[0].toUpperCase() + m.slice(1), hint: info?.description?.slice(0, 60) };
+                          }),
+                        ]}
+                      />
+                    </div>
                   )}
                 </li>
               );

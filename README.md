@@ -108,6 +108,24 @@ For people who want to see exactly what each agent is doing. Turn it on with the
 - **App preview** beside the terminal, the way coding agents show what they build: static pages render live with Desktop, iPad and iPhone frames; apps with their own dev server show the command, with Copy and Open Terminal. It opens by itself with one or two panes; the window button in each pane toggles it.
 - **Usage limit resets**: when Claude Code or Codex stops on a usage limit and no other agent can take the step, Nexus reads the reset time from the agent's own message (`resets 11:40pm (America/Los_Angeles)`, `try again in 2 hours 13 minutes`) and runs the step again a minute after it. The pane shows the time with a **Don't wait** button; a limit message without a time gets **Run when it resets** only if the time can be read. Nexus never guesses a reset time.
 - **Hide the sidebar** with the panel button left of the page title, for a full-width workspace. Nexus remembers the choice.
+- **Project map** (Map button in the Advanced toolbar): the project as a map. Folders are districts, files are tiles sized by line count, faint lines are relative imports (bright for the file under the pointer). Each agent is a marker on the file it read or edited last; it glides to the next file as events arrive, trails its recent path, and files it edited glow in its colour. New files an agent created in its worktree show as new. Built from the files on disk and the recorded events (`/api/advanced/map`), first 300 files.
+- **Send animation**: a request sent with Ask the agents folds into a sheet, becomes a paper plane labelled with the agent that got it and flies to that agent's pane. Skipped when the system asks for reduced motion.
+
+### Speed
+
+All live views in a browser tab share one server-sent event stream (`src/lib/live.ts`). Before, every step box on a run page held its own stream; a five-step run used all six connections a browser allows per site, so clicks, page loads and API calls waited behind them. Panes re-render only when their own session or output changes, and show the last 500 lines with a button for earlier ones.
+
+`npm run dev` compiles each page on first visit and after every code change, which can take seconds. For daily use run the production build:
+
+```bash
+npm run app
+```
+
+Measured in headless Chrome on this machine: first load to a ready page 173 ms (production) and 287 ms (dev); most page switches 10 to 90 ms.
+
+### Token use
+
+`node scripts/token-report.mjs` reads the token counts each agent reported for your finished steps and compares like with like (same agent, model and role): project map on and off, output styles, and whole runs by how many cloud agents took part. It estimates nothing. Team runs use more tokens than one agent alone, because every extra cloud step (images, review) reads the project too; Ollama steps use no account quota. Whether the project map or a shorter output style saves tokens depends on the task, and the script says how many runs each comparison rests on.
 
 All panes share one server-sent event stream (`/api/advanced/stream`), so four panes don't use up the browser's six connections. Raw output is kept in memory only (the last 4000 lines per session, secrets redacted) and is gone after Nexus restarts; the steps are stored in SQLite as before. Ollama runs as a local server, so it has steps but no process output.
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { Picker } from "./picker";
+import { tidyPath } from "@/lib/format";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -47,21 +49,8 @@ function ProjectSwitcher() {
     );
   return (
     <div>
-      <label htmlFor="ws-project" className="mb-1 block px-1 font-mono text-[11px] text-ink-3">
-        Workspace
-      </label>
-      <select
-        id="ws-project"
-        value={project?.id ?? ""}
-        onChange={(e) => setProjectId(e.target.value)}
-        className="h-[34px] w-full truncate rounded-[var(--radius-control)] border border-line bg-canvas px-2 font-mono text-[12.5px] text-ink focus:border-line-strong focus:outline-none"
-      >
-        {projects.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
-          </option>
-        ))}
-      </select>
+      <p className="mb-1 px-1 font-mono text-[11px] text-ink-3">Workspace</p>
+      <Picker label="Workspace" size="sm" className="font-mono" value={project?.id ?? ""} onChange={setProjectId} options={projects.map((p) => ({ value: p.id, label: p.name, hint: tidyPath(p.path) }))} />
     </div>
   );
 }

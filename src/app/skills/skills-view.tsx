@@ -1,11 +1,12 @@
 "use client";
 
+import { Picker } from "@/components/picker";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, ChevronDown, Download, ExternalLink, Layers, PackagePlus, RefreshCw, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { ReviewBadge } from "@/components/agent-bits";
-import { Badge, Button, CommandLine, ConfirmDialog, Drawer, EmptyState, PageHeader, Segmented, Spinner, Toast, cx, inputClass, selectClass } from "@/components/ui";
+import { Badge, Button, CommandLine, ConfirmDialog, Drawer, EmptyState, PageHeader, Segmented, Spinner, Toast, cx, inputClass } from "@/components/ui";
 import { useWorkspace } from "@/components/workspace-context";
 import { api, fmtNum, timeAgo, useApi, usePref } from "@/lib/client";
 import { tidyPath } from "@/lib/format";
@@ -219,16 +220,12 @@ function SkillInspector({ id, onClose, notify, onInstalled }: { id: string | nul
                       { value: "global", label: "Global (all projects)" },
                     ]}
                   />
-                  <label className="flex items-center gap-2 text-[12.5px] text-ink-2">
+                  <div className="flex items-center gap-2 text-[12.5px] text-ink-2">
                     Agent
-                    <select value={agent} onChange={(e) => setAgent(e.target.value)} className={cx(selectClass, "h-8 text-[12.5px]")}>
-                      {AGENT_TARGETS.map((a) => (
-                        <option key={a.v} value={a.v}>
-                          {a.l}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    <div className="w-44">
+                      <Picker label="Agent" size="sm" value={agent} onChange={setAgent} options={AGENT_TARGETS.map((a) => ({ value: a.v, label: a.l }))} />
+                    </div>
+                  </div>
                 </div>
                 {scope === "project" && !project && <p className="mt-2 text-[12.5px] text-warn">Select a project first, or install globally.</p>}
                 {!plan ? (
@@ -361,16 +358,9 @@ function StackPanel({ installedAll, notify }: { installedAll: InstalledSkill[]; 
                       {i.id.split("@")[1]}
                     </p>
                     <div className="mt-1 flex gap-1">
-                      <select
-                        aria-label={`Stage for ${i.id}`}
-                        value={i.stage}
-                        onChange={(e) => save({ ...draft, items: draft.items.map((x) => (x.id === i.id ? { ...x, stage: e.target.value as StackStage } : x)) })}
-                        className="min-w-0 flex-1 rounded border border-line bg-surface px-1 text-[11px]"
-                      >
-                        {STACK_STAGES.map((s) => (
-                          <option key={s}>{s}</option>
-                        ))}
-                      </select>
+                      <div className="min-w-0 flex-1">
+                        <Picker label={`Stage for ${i.id}`} size="sm" value={i.stage} onChange={(v) => save({ ...draft, items: draft.items.map((x) => (x.id === i.id ? { ...x, stage: v as StackStage } : x)) })} options={STACK_STAGES.map((s) => ({ value: s, label: s }))} />
+                      </div>
                       <button aria-label={`Remove ${i.id} from stack`} onClick={() => save({ ...draft, items: draft.items.filter((x) => x.id !== i.id) })} className="rounded px-1 text-ink-3 hover:text-bad">
                         <Trash2 size={12} />
                       </button>

@@ -1,5 +1,6 @@
 "use client";
 
+import { Picker } from "@/components/picker";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -12,43 +13,14 @@ import { useWorkspace } from "@/components/workspace-context";
 import { api, fmtNum, useApi } from "@/lib/client";
 import { tidyPath } from "@/lib/format";
 import { classifyFailure } from "@/lib/failure";
-import { CONCISE_LABELS, type AgentEvent, type AgentStatus, type Session, type Workflow } from "@/lib/types";
+import { useSessionStream } from "@/lib/live";
+import { CONCISE_LABELS, type AgentStatus, type Session, type Workflow } from "@/lib/types";
 
 type WorkflowResp = { workflow: Workflow; sessions: Session[]; overlaps: { file: string; sessions: string[] }[] };
 type DiffResp = { files: { path: string; status: string; additions: number; deletions: number; binary: boolean }[]; patch: string; truncated?: boolean; note?: string; isolated?: boolean; branch?: string | null; base?: string | null };
 
 const ROLE: Record<Session["role"], string> = { solo: "Solo", plan: "Plan", build: "Build", review: "Review", parallel: "Parallel", revise: "Revision", copy: "Copy", assets: "Images" };
 const active = (s: Session) => s.status === "running" || s.status === "starting" || s.status === "queued";
-
-function useSessionStream(id: string) {
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [session, setSession] = useState<Session | null>(null);
-  const last = useRef(0);
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let closed = false;
-    const open = () => {
-      es = new EventSource(`/api/sessions/${id}/events?after=${last.current}`);
-      es.addEventListener("agent", (m) => {
-        const e = JSON.parse((m as MessageEvent).data) as AgentEvent;
-        if (e.id <= last.current) return;
-        last.current = e.id;
-        setEvents((cur) => [...cur, e]);
-      });
-      es.addEventListener("session", (m) => setSession(JSON.parse((m as MessageEvent).data)));
-      es.onerror = () => {
-        es?.close();
-        if (!closed) window.setTimeout(open, 2000);
-      };
-    };
-    open();
-    return () => {
-      closed = true;
-      es?.close();
-    };
-  }, [id]);
-  return { events, session };
-}
 
 export function DiffView({ diff }: { diff: DiffResp }) {
   const [file, setFile] = useState<string | null>(null);
@@ -158,13 +130,9 @@ function FailureHelp({ s, agent, agents, busy, onMove, onRetry, notify }: { s: S
           {others.length > 0 && (
             <>
               {others.length > 1 && (
-                <select aria-label="Agent to move this step to" value={target} onChange={(e) => setPick(e.target.value)} className={cx(inputClass, "h-8 w-auto py-0 text-[12.5px]")}>
-                  {others.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.displayName}
-                    </option>
-                  ))}
-                </select>
+                <div className="w-44">
+                  <Picker label="Agent to move this step to" size="sm" value={target} onChange={setPick} options={others.map((a) => ({ value: a.id, label: a.displayName }))} />
+                </div>
               )}
               <Button size="sm" variant="primary" onClick={() => onMove(target)} disabled={busy || !target}>
                 <ArrowRightLeft size={14} aria-hidden /> Run with {others.find((a) => a.id === target)?.displayName}
@@ -514,14 +482,10 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
           </>
         }
       >
-        <label htmlFor={`chk-${s.id}`} className="mb-1 block text-[13px]">
-          Script from the project&apos;s package.json
-        </label>
-        <select id={`chk-${s.id}`} value={check ?? ""} onChange={(e) => setCheck(e.target.value)} className={cx(inputClass, "mb-3")}>
-          {scripts.map((sc) => (
-            <option key={sc}>{sc}</option>
-          ))}
-        </select>
+        <p className="mb-1 block text-[13px]">Script from the project&apos;s package.json</p>
+        <div className="mb-3">
+          <Picker label="Script from the project's package.json" className="font-mono" value={check ?? ""} onChange={setCheck} options={scripts.map((sc) => ({ value: sc, label: sc }))} />
+        </div>
         <p className="mb-1">Nexus will run this in {s.worktreeBranch ? "the session's worktree" : "the project folder"}:</p>
         <pre className="term rounded border border-line p-2 text-[12px] text-ink">npm run {check}</pre>
         <p className="mt-2 text-[12px] text-ink-3">It runs the project&apos;s own script, which can do anything that script does. Up to 5 minutes.</p>
