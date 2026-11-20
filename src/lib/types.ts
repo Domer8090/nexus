@@ -330,6 +330,12 @@ export type Settings = {
   codexModel: string | null;
   /** Write NEXUS_MAP.md into each session's worktree and tell the agent to read it first. */
   projectMap: boolean;
+  /**
+   * Start Claude Code with only what a coding step uses: no MCP servers except the project's own
+   * .mcp.json, and no user plugins, skills or hooks unless the step picked skills. Measured to cut
+   * tokens by about two thirds on a medium repo (docs/token-ab-test.md).
+   */
+  leanContext: boolean;
   /** Hold `caffeinate` while steps run, so the Mac doesn't idle-sleep mid-build. */
   keepAwake: boolean;
   /** Wi-Fi network to join when the connection drops during a run (for example an iPhone hotspot). */
@@ -347,6 +353,7 @@ export const DEFAULT_SETTINGS: Settings = {
   claudeModel: null,
   codexModel: null,
   projectMap: true,
+  leanContext: true,
   keepAwake: true,
   backupNetwork: null,
   advancedMode: false,

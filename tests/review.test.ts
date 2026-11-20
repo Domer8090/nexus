@@ -3,6 +3,7 @@ import { mentionedPaths, scopeFlags, splitPatch } from "@/runtime/review";
 import { parseRateLimits, windowName } from "@/runtime/agents/codex-limits";
 import { levelOf, resetsAt } from "@/runtime/limits";
 import type { FileDiff } from "@/runtime/workspace";
+import { leanArgs } from "@/runtime/agents/claude";
 
 const f = (path: string, extra: Partial<FileDiff> = {}): FileDiff => ({ path, status: "modified", additions: 5, deletions: 2, binary: false, ...extra });
 const kinds = (task: string, file: FileDiff) => scopeFlags(task, [file])[0].flags.map((x) => x.kind);
@@ -81,5 +82,14 @@ describe("resetsAt", () => {
   it("returns null when no reset time is known or it has passed", () => {
     expect(resetsAt({ windows: [{ window: "7-day", utilization: 1, status: "rejected" }] }, now)).toBeNull();
     expect(resetsAt({ windows: [{ window: "7-day", utilization: 1, resetsAt: "2026-11-19T11:00:00Z" }] }, now)).toBeNull();
+  });
+});
+
+describe("leanArgs", () => {
+  it("drops MCP, plugins and skills for a step without skills", () => {
+    expect(leanArgs({ cwd: "/nonexistent-nexus-dir", skills: [] })).toEqual(["--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "project,local"]);
+  });
+  it("keeps user settings and skills when the step picked skills", () => {
+    expect(leanArgs({ cwd: "/nonexistent-nexus-dir", skills: ["frontend-design"] })).toEqual(["--strict-mcp-config"]);
   });
 });

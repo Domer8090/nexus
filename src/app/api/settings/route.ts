@@ -20,6 +20,7 @@ const schema = z
     claudeModel: z.string().max(80).nullable(),
     codexModel: z.string().max(80).nullable(),
     projectMap: z.boolean(),
+    leanContext: z.boolean(),
     keepAwake: z.boolean(),
     advancedMode: z.boolean(),
     backupNetwork: z

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { commandPreview, killTree, onLines, run, spawnLong, which } from "../proc";
 import { redact } from "../redact";
 import type { AgentAdapter, LaunchInput } from "./types";
@@ -10,6 +12,7 @@ import { CONCISE_INSTRUCTIONS } from "./types";
  *   claude -p ... --output-format stream-json --verbose --include-partial-messages
  *   --permission-mode plan|acceptEdits, --permission-prompts none,
  *   --allowedTools / --disallowedTools, --resume <id>, --model, --append-system-prompt
+ *   --strict-mcp-config, --mcp-config, --disable-slash-commands, --setting-sources (lean context)
  */
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -36,8 +39,23 @@ export function buildArgs(input: LaunchInput): string[] {
   // Attached images live in Nexus's data folder; give Claude Code read access to that folder only.
   const dirs = Array.from(new Set((input.attachments ?? []).map((f) => f.slice(0, f.lastIndexOf("/")))));
   if (dirs.length) args.push("--add-dir", ...dirs);
+  if (input.lean) args.push(...leanArgs(input));
   args.push("-n", `nexus-${input.sessionId}`);
   return args;
+}
+
+/**
+ * Every MCP server, plugin and skill the user has installed is sent to the model on every call of
+ * the session as tool definitions and listings. A coding step rarely uses them, so lean context
+ * starts Claude Code without them: only the project's own .mcp.json, and the project's settings.
+ * When the step picked skills, user settings and skills stay on so those skills can load.
+ */
+export function leanArgs(input: Pick<LaunchInput, "cwd" | "skills">): string[] {
+  const out = ["--strict-mcp-config"];
+  const projectMcp = path.join(input.cwd, ".mcp.json");
+  if (fs.existsSync(projectMcp)) out.push("--mcp-config", projectMcp);
+  if (!input.skills.length) out.push("--disable-slash-commands", "--setting-sources", "project,local");
+  return out;
 }
 
 function short(v: unknown, n = 160) {
@@ -112,6 +130,13 @@ export const claudeAdapter: AgentAdapter = {
     const args = buildArgs(input);
     sink.setCommand(["claude", ...args.map((a, i) => (args[i - 1] === "-p" || args[i - 1] === "--append-system-prompt" ? short(a, 80) : a))].map(redact));
     sink.emit("system", `Started: ${commandPreview("claude", args.map((a, i) => (args[i - 1] === "-p" || args[i - 1] === "--append-system-prompt" ? "<brief>" : a)))}`);
+    if (input.lean)
+      sink.emit(
+        "system",
+        input.skills.length
+          ? "Lean context: started without your MCP servers. Your plugins and skills stay on because this step uses skills."
+          : "Lean context: started without your MCP servers, plugins and skills, which saves tokens on every call. Turn it off in Settings if a step needs them.",
+      );
     const child = spawnLong("claude", args, input.cwd);
     let textBuf = "";
     let flushTimer: NodeJS.Timeout | null = null;

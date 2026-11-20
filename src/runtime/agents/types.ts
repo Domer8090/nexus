@@ -16,6 +16,8 @@ export type LaunchInput = {
   context?: string;
   /** Image files attached to the request. */
   attachments?: string[];
+  /** Load only what a coding step uses (see Settings.leanContext). */
+  lean?: boolean;
 };
 
 export type EventSink = {

@@ -641,6 +641,7 @@ async function start(s0: Session) {
         resumeNativeId: parent?.nativeSessionId ?? null,
         context: ctx,
         attachments: s.attachments,
+        lean: getSettings().leanContext,
       },
       {
         emit: (kind, text, data) => addEvent(sid, kind, text, data),

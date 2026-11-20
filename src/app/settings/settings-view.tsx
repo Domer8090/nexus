@@ -142,6 +142,13 @@ export function SettingsView() {
                 <span className="block text-[12px] text-ink-3">Before each session Nexus writes NEXUS_MAP.md (every file, its size and what it defines) into the session&apos;s worktree and tells the agent to read it first instead of exploring folders. Kept out of git, so it never appears in a diff.</span>
               </span>
             </label>
+            <label className="flex items-start gap-2.5 text-[13px]">
+              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--accent)]" checked={st.leanContext} onChange={(e) => patch({ leanContext: e.target.checked })} />
+              <span>
+                <span className="font-medium text-ink">Lean context for Claude Code</span>
+                <span className="block text-[12px] text-ink-3">Starts each step without your MCP servers, plugins and skills, which Claude Code otherwise sends on every call. Your project&apos;s own .mcp.json still loads, and steps that picked skills keep them. In our test it used about two thirds fewer tokens.</span>
+              </span>
+            </label>
             <KeepRunning st={st} patch={patch} notify={setToast} />
           </Section>
 
