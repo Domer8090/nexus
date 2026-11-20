@@ -23,6 +23,7 @@ export function Picker({
   size = "md",
   id,
   disabled,
+  action,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -34,6 +35,8 @@ export function Picker({
   size?: "sm" | "md" | "lg";
   id?: string;
   disabled?: boolean;
+  /** An extra row under the options, e.g. "Add a project". */
+  action?: { label: string; icon?: React.ReactNode; onClick: () => void };
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -207,6 +210,22 @@ export function Picker({
               })}
               {!shown.length && <li className="px-3 py-3 text-[14px] text-ink-3">Nothing matches.</li>}
             </ul>
+            {action && (
+              <div className="border-t border-line p-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setQuery("");
+                    action.onClick();
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14px] text-ink-2 hover:bg-[color-mix(in_oklab,var(--ink)_9%,transparent)] hover:text-ink"
+                >
+                  <span className="grid size-4 shrink-0 place-items-center">{action.icon}</span>
+                  {action.label}
+                </button>
+              </div>
+            )}
           </div>,
           document.body,
         )}

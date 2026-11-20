@@ -1,6 +1,7 @@
 "use client";
 
 import { Picker } from "./picker";
+import { FolderPicker } from "./folder-picker";
 import { tidyPath } from "@/lib/format";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -40,17 +41,41 @@ const TITLES: [RegExp, string][] = [
 const ADVANCED = { href: "/advanced", label: "Advanced", icon: SquareTerminal };
 
 function ProjectSwitcher() {
-  const { projects, project, setProjectId } = useWorkspace();
+  const { projects, project, setProjectId, reloadProjects } = useWorkspace();
+  const [adding, setAdding] = useState(false);
+  const dialog = (
+    <FolderPicker
+      open={adding}
+      onClose={() => setAdding(false)}
+      onPicked={async (p) => {
+        setAdding(false);
+        await reloadProjects();
+        setProjectId(p.id);
+      }}
+    />
+  );
   if (!projects.length)
     return (
-      <Link href="/projects" className="flex h-9 items-center gap-2 rounded-[var(--radius-control)] border border-dashed border-line-strong px-2.5 text-[13px] text-ink-2 hover:text-ink">
-        <Plus size={14} aria-hidden /> Add a project
-      </Link>
+      <>
+        <button type="button" onClick={() => setAdding(true)} className="flex h-9 w-full items-center gap-2 rounded-[var(--radius-control)] border border-dashed border-line-strong px-2.5 text-[13px] text-ink-2 hover:text-ink">
+          <Plus size={14} aria-hidden /> Add a project
+        </button>
+        {dialog}
+      </>
     );
   return (
     <div>
       <p className="mb-1 px-1 font-mono text-[11px] text-ink-3">Workspace</p>
-      <Picker label="Workspace" size="sm" className="font-mono" value={project?.id ?? ""} onChange={setProjectId} options={projects.map((p) => ({ value: p.id, label: p.name, hint: tidyPath(p.path) }))} />
+      <Picker
+        label="Workspace"
+        size="sm"
+        className="font-mono"
+        value={project?.id ?? ""}
+        onChange={setProjectId}
+        options={projects.map((p) => ({ value: p.id, label: p.name, hint: tidyPath(p.path) }))}
+        action={{ label: "Add a project", icon: <Plus size={15} aria-hidden />, onClick: () => setAdding(true) }}
+      />
+      {dialog}
     </div>
   );
 }

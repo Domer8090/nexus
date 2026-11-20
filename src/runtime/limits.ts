@@ -78,3 +78,10 @@ export function describe(l: AgentLimits): string {
   const pct = Math.round(l.top.utilization * 100);
   return `${l.agentName} has used ${pct}% of its ${l.top.window} limit${when ? `; it resets ${when}` : ""}.`;
 }
+
+/** When a full agent can work again: the latest reset among its full windows, or null if unknown. */
+export function resetsAt(l: Pick<AgentLimits, "windows">, now = Date.now()): number | null {
+  const full = l.windows.filter((w) => w.utilization >= 1 || w.status === "rejected");
+  const at = Math.max(0, ...full.map((w) => (w.resetsAt ? Date.parse(w.resetsAt) : 0)));
+  return at > now ? at : null;
+}

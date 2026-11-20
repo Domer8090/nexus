@@ -10,7 +10,7 @@ import { useWorkspace } from "@/components/workspace-context";
 import { timeAgo, useApi } from "@/lib/client";
 import { tidyPath } from "@/lib/format";
 import type { AgentStatus, PresetId, Session } from "@/lib/types";
-import { FolderPicker } from "./projects/projects-view";
+import { FolderPicker } from "@/components/folder-picker";
 import { MosaicSky, PixelText } from "@/components/mosaic";
 
 const PRESETS: { id: PresetId; title: string; body: string }[] = [

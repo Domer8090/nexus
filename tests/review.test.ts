@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mentionedPaths, scopeFlags, splitPatch } from "@/runtime/review";
 import { parseRateLimits, windowName } from "@/runtime/agents/codex-limits";
-import { levelOf } from "@/runtime/limits";
+import { levelOf, resetsAt } from "@/runtime/limits";
 import type { FileDiff } from "@/runtime/workspace";
 
 const f = (path: string, extra: Partial<FileDiff> = {}): FileDiff => ({ path, status: "modified", additions: 5, deletions: 2, binary: false, ...extra });
@@ -60,5 +60,26 @@ describe("Codex usage limits", () => {
     expect(levelOf([{ window: "5-hour", utilization: 0.8 }])).toBe("near");
     expect(levelOf([{ window: "5-hour", utilization: 1 }])).toBe("out");
     expect(levelOf([{ window: "7-day", utilization: 0.4, status: "rejected" }])).toBe("out");
+  });
+});
+
+describe("resetsAt", () => {
+  const now = Date.parse("2026-11-19T12:00:00Z");
+  it("returns the latest reset among full windows", () => {
+    const at = resetsAt(
+      {
+        windows: [
+          { window: "5-hour", utilization: 1, resetsAt: "2026-11-19T14:00:00Z", status: "rejected" },
+          { window: "7-day", utilization: 1, resetsAt: "2026-11-21T09:00:00Z", status: "rejected" },
+          { window: "30-day", utilization: 0.4, resetsAt: "2026-12-01T00:00:00Z", status: "allowed" },
+        ],
+      },
+      now,
+    );
+    expect(at).toBe(Date.parse("2026-11-21T09:00:00Z"));
+  });
+  it("returns null when no reset time is known or it has passed", () => {
+    expect(resetsAt({ windows: [{ window: "7-day", utilization: 1, status: "rejected" }] }, now)).toBeNull();
+    expect(resetsAt({ windows: [{ window: "7-day", utilization: 1, resetsAt: "2026-11-19T11:00:00Z" }] }, now)).toBeNull();
   });
 });

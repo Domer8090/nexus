@@ -21,6 +21,13 @@ import type { AgentEvent, Session } from "@/lib/types";
  */
 
 type ProcRow = { pid: number; ppid: number; cpu: number; rssMb: number; elapsed: string; args: string; depth: number };
+/** "at 3:40 PM" today, "Nov 21, 3:40 PM" on another day. */
+function resetWhen(iso: string) {
+  const d = new Date(iso);
+  const today = d.toDateString() === new Date().toDateString();
+  return today ? `at ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `on ${d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
+
 type Limit = { agentId: string; agentName: string; level: "ok" | "near" | "out"; text: string };
 type AdvSession = Session & { pid: number | null; procs: ProcRow[]; resume: string | null };
 type Log = { events: AgentEvent[]; raw: RawLine[]; loaded: boolean };
@@ -464,15 +471,24 @@ function PaneInner({
             )}
           </div>
         )}
-        {s.status === "failed" && (s.retryAt || isLimit(s.error)) && (
+        {((s.status === "failed" && (s.retryAt || isLimit(s.error))) || (s.status === "queued" && s.retryAt)) && (
           <div className="mt-1 flex items-center gap-2 text-ink-2">
-            <span className="min-w-0 flex-1 truncate">{s.retryAt ? `Runs again at ${new Date(s.retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, when the limit resets.` : "Usage limit hit."}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {s.retryAt
+                ? `${s.status === "queued" ? "Starts" : "Runs again"} ${resetWhen(s.retryAt)}, when the limit resets.`
+                : "Usage limit hit."}
+            </span>
             <button
               type="button"
-              onClick={() => act(() => api(`/api/sessions/${s.id}/action`, { body: { action: "wait-reset", wait: !s.retryAt } }), s.retryAt ? "Won't run again by itself." : "Waiting for the reset.")}
+              onClick={() =>
+                act(
+                  () => api(`/api/sessions/${s.id}/action`, { body: { action: "wait-reset", wait: !s.retryAt } }),
+                  s.status === "queued" ? "Running now." : s.retryAt ? "Won't run again by itself." : "Waiting for the reset.",
+                )
+              }
               className="shrink-0 rounded border border-line-strong px-2 py-0.5 text-ink hover:bg-[#1f1f1f]"
             >
-              {s.retryAt ? "Don't wait" : "Run when it resets"}
+              {s.status === "queued" ? "Run now" : s.retryAt ? "Don't wait" : "Run when it resets"}
             </button>
           </div>
         )}

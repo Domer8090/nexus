@@ -30,7 +30,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/sessions/[id]/a
     return Response.json({ session: retry(id) });
   }
   if (a.action === "wait-reset") {
-    if (s.status !== "failed") return bad("Only a failed step can wait for a limit reset.");
+    const held = s.status === "queued" && !!s.retryAt;
+    if (s.status !== "failed" && !held) return bad("Only a failed step, or one waiting for a limit reset, can change this.");
     try {
       return Response.json({ session: setResetWait(id, a.wait) });
     } catch (e) {

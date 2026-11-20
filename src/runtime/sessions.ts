@@ -8,7 +8,7 @@ import { getSettings } from "./settings";
 import { canLaunch, detectAll, getAdapter, invalidateDetection } from "./agents/registry";
 import { bestModel } from "@/lib/model-pick";
 import { startPowerWatch, waitForNetwork } from "./power";
-import { describe, limitsFor } from "./limits";
+import { describe, limitsFor, resetsAt } from "./limits";
 import { notesContext } from "./notes";
 import { MAP_FILE, MAP_INSTRUCTION, buildMap, writeMap } from "./project-map";
 import { canHandOff, classifyFailure } from "@/lib/failure";
@@ -144,9 +144,16 @@ function recover() {
 function runDueResets() {
   const now = Date.now();
   for (const s of listSessions({ limit: 500 })) {
-    if (s.retryAt && s.status === "failed" && Date.parse(s.retryAt) <= now) {
+    if (!s.retryAt || Date.parse(s.retryAt) > now) continue;
+    if (s.status === "failed") {
       addEvent(s.id, "system", "The usage limit has reset. Running this step again.");
       retry(s.id);
+    } else if (s.status === "queued" && !state.queue.includes(s.id) && !state.handles.has(s.id)) {
+      // A step held before it started because its agent was at 100%.
+      update(s.id, { retryAt: null, notice: null });
+      addEvent(s.id, "system", "The usage limit has reset. Starting this step.");
+      state.queue.push(s.id);
+      pump();
     }
   }
 }
@@ -155,6 +162,14 @@ function runDueResets() {
 export function setResetWait(sessionId: string, wait: boolean): Session {
   const s = getSession(sessionId);
   if (!s) throw new Error("Session not found.");
+  if (!wait && s.status === "queued") {
+    // Held for a reset: the person chose to run it now anyway.
+    const next = update(sessionId, { retryAt: null, ignoreLimit: true, notice: null })!;
+    addEvent(sessionId, "system", "Running now without waiting for the limit to reset.");
+    if (!state.queue.includes(sessionId)) state.queue.push(sessionId);
+    pump();
+    return next;
+  }
   if (!wait) return update(sessionId, { retryAt: null, notice: "Nexus won't run this step again by itself." })!;
   const at = parseReset(s.error);
   if (!at) throw new Error("The agent did not say when its limit resets.");
@@ -300,7 +315,7 @@ export function revise(sessionId: string, feedback: string): Session {
 }
 
 export function retry(sessionId: string): Session {
-  const s = update(sessionId, { status: "queued", error: null, summary: null, usage: null, startedAt: null, endedAt: null, notice: null, retryAt: null });
+  const s = update(sessionId, { status: "queued", error: null, summary: null, usage: null, startedAt: null, endedAt: null, notice: null, retryAt: null, ignoreLimit: false });
   if (!s) throw new Error("Session not found.");
   addEvent(s.id, "system", "Retry requested.");
   state.queue.push(s.id);
@@ -330,6 +345,8 @@ export async function reassign(sessionId: string, agentId: string, model: string
     command: [],
     startedAt: null,
     endedAt: null,
+    retryAt: null,
+    ignoreLimit: false,
     notice: `Moved from ${from} to ${a.displayName} by you.`,
   })!;
   addEvent(s.id, "system", `Moved from ${from} to ${a.displayName}.`);
@@ -531,12 +548,20 @@ async function start(s0: Session) {
     return fail(why);
   }
   // The agent already reported a full usage limit: hand the step on before it fails.
-  const lim = limitsFor(s.agentId);
+  const lim = s.ignoreLimit ? null : limitsFor(s.agentId);
   if (lim?.level === "out") {
     state.handles.delete(s.id);
     if (await handOff(s.id, `${describe(lim)} Its usage limit is reached.`)) return pump();
+    // Nobody else can take it: hold the step until the full window resets, then start it.
+    const at = resetsAt(lim);
+    if (at) {
+      const when = new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      update(s.id, { status: "queued", startedAt: null, retryAt: new Date(at).toISOString(), notice: `Waiting for ${lim.agentName}'s limit to reset at ${when}. It starts then by itself.` });
+      addEvent(s.id, "system", `${describe(lim)} No other agent can take this step, so Nexus starts it at ${when}, when the limit resets.`);
+      return pump();
+    }
     state.handles.set(s.id, placeholder);
-    addEvent(s.id, "system", `${describe(lim)} No other agent can take this step, so Nexus runs it anyway.`);
+    addEvent(s.id, "system", `${describe(lim)} No other agent can take this step and the agent gave no reset time, so Nexus runs it anyway.`);
   } else if (lim?.level === "near") {
     addEvent(s.id, "system", `${describe(lim)} You can move this step to another agent.`);
   }
