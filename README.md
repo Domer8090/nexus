@@ -4,7 +4,7 @@
 
 Nexus is a local-first control center for the AI coding tools already on your machine. Pick a project folder and describe a goal. Nexus asks a few clarifying questions, turns your answers into an optimized prompt, assembles a team of the agents on your machine (each on the job it does best), shows the exact commands, and runs the work while a live dashboard shows progress and a preview of the result. Each session edits its own git worktree, streams its activity, and waits for you to review the diff before anything touches your project.
 
-Nexus does not use provider API keys. Agents run with their own sign-in (for example, your Claude account through Claude Code). Local models run through Ollama.
+Agents run with their own sign-in (for example, your Claude account through Claude Code), never with an API key. Local models run through Ollama. One optional feature, Explain, can use a Backboard API key if you add one; it is off without it.
 
 ## Run it
 
@@ -29,6 +29,26 @@ npm run build
 ```bash
 npm start
 ```
+
+## Mac app
+
+`npm run dmg` builds `dist/Nexus.dmg`. Open it and drag Nexus to Applications. The app starts its own server on 127.0.0.1 and stops it, and any running agents, when you quit. It shares `~/.nexus` with `npm run dev`; don't run both while agents work. It uses the Node.js on your Mac (22.13 or newer), is built for this Mac's processor, and is not notarized by Apple, so another Mac will block it on first open. Optional settings such as `BACKBOARD_API_KEY` go in `~/.nexus/.env` for the app.
+
+## Modes
+
+First-run questions suggest a mode; switch at the top any time. Each mode has a spotlight tour (the ? button).
+
+- **Beginner**: Home, Playground, Runs and the rest. No terminals.
+- **Advanced**: the terminals workspace. None of Beginner's screens.
+- **Hackathon**: name, deadline, judging criteria and idea, then six steps: PRD, build, test, polish, submission, judge. Stop and resume any time. At the deadline, or when you end it, Nexus opens in Advanced. The scorecard is an AI's estimate.
+
+While an agent works, the header and the run show the file or command it is on and a checklist: its own plan when it gives one (task tool or written checklist), otherwise its latest actions.
+
+**Questions on the side** (`src/components/question-dock.tsx`, `/api/ask`): "Nexus has a few questions" sits beside the work and never holds it up. Rule-based questions show at once, the local model prepares more while you answer, and an agent that gets stuck adds its own and carries on with its best guess. Every step that starts later gets your answers; if the build already finished, one button sends them as a revision. In Hackathon mode the submission is written beside the tests, by Codex when it is signed in.
+
+**Talk to the agent** (`src/components/composer.tsx`, `/api/talk`) works in all three modes, at any moment. Send now pauses a working step and continues its own session with your message; After this step waits. Attach, paste or drop a picture, or take a screenshot of an area, then draw boxes, arrows or lines on it. Point at it lets you click an element in the live page. Hackathon documents can be edited in place. The area screenshot uses macOS's own tool and needs Screen Recording permission.
+
+**Go back** lists a restore point for each finished step. **Ready?** checks what a submission still needs; it sees only this Mac, so it can't tell whether a judge can open your link.
 
 ## Verify
 
@@ -79,6 +99,9 @@ Nexus refuses a Codex sign-in that uses an API key, and removes `ANTHROPIC_API_K
 - **Isolation**: each editing session runs in its own git worktree under `~/.nexus/worktrees`, on a `nexus/<session>` branch from your current HEAD. Uncommitted changes in your project are not included. If the project isn't a git repo, the session edits the folder directly and diff review is off.
 - **Review**: per-session diff, files touched, optional project check script (`npm run test|lint|typecheck|build`, after approval), Apply (copies the changes into your project as uncommitted edits, refusing on conflict), Discard (removes the worktree and branch), Ask for changes (resumes the agent's session).
 - **Scope guard** (`src/runtime/review.ts`): before you apply, every changed file is checked against the diff itself: deleted files, dependency files (`package.json`, lockfiles, `requirements.txt`…), project settings (`.env`, CI, `tsconfig`, config files), edits of 300 lines or more, and edits that mostly remove code. When the task names files or folders, files outside them are flagged and start unchecked. A task that names no files gets no outside check, because Nexus would only be guessing.
+- **Proof checks** (`src/runtime/proof.ts`): do the diff and the recorded commands back up what the agent said? Flags "tests pass" without a test run Nexus saw, a test run that failed or is older than the last edit, skipped, deleted or always-true tests, removed assertions, unfinished code, silenced errors, secrets, and imports missing from `package.json`. New packages can be looked up on npm (missing, or under 30 days old) when you press the button. These are patterns and can be wrong in both directions: a piped `npm test | tail` hides its exit code, and shell edits are not recorded as file events. Runs recorded before this feature kept only shortened commands, so Nexus says it couldn't confirm them.
+- **Understand it** (Ask a friend, first step): explains the change for someone new to code, a teammate, or someone who doesn't code, then asks three questions so you can check that you could explain it yourself. Uses Ollama, or Backboard when you pick it. Before a diff goes to Backboard, secret files, lines that look like secrets, emails and your home folder path are removed.
+- **Ask a friend** (`src/runtime/help.ts`): saves one HTML file with your question, the explanation, the proof checks and the diff. A friend opens it in any browser, with no account or install, writes notes and sends back a reply. You paste the reply, edit it, and only then can it go to the agent as a new step. Nexus uploads nothing; the file's content security policy blocks all network requests. Pattern matching can miss a secret, so read the file before sending it. Example: [docs/sample-help-file.html](docs/sample-help-file.html).
 - **Apply file by file**: tick the files to keep and Apply only those (`git diff <base> -- <files>`, then `git apply`). Unticked files stay in the worktree, so you can apply them later or discard the rest. The run shows "Applied 3 of 5 files".
 - **Change summary**: when Ollama runs, the light local model writes one sentence per file saying what changed (`/api/sessions/<id>/review?ai=1`, about 20 seconds with `llama3.2:3b`). It also says when a file may be off-task. That is shown as the model's opinion and never unchecks a file, because a 3B model gets it wrong often: in testing it called the only file of a "improve the app" task unrelated. Without Ollama the checks above still run and the drawer says there are no summaries.
 - **Project notes** (Notes in the Advanced toolbar): rules and decisions you write once ("use Tailwind", "don't touch checkout") go to every new step in that project, as the first part of the agent's context. Stored in Nexus's database (`kv` table), not in the project, so they reach worktrees and never end up in a commit. Up to 8,000 characters, redacted like everything else. Revisions don't get them again, since they continue a session that already has them.
@@ -105,7 +128,7 @@ Claude Code sends every installed MCP server, plugin and skill to the model on e
 
 ### Advanced mode
 
-For people who want to see exactly what each agent is doing. Turn it on with the **Advanced** switch in the header; an **Advanced** page appears in the menu (`src/app/advanced`). It is laid out like a terminal multiplexer built for agents:
+For people who want to see exactly what each agent is doing. Pick **Advanced** in the mode menu at the top; it opens the Advanced workspace (`src/app/advanced`). It is laid out like a terminal multiplexer built for agents:
 
 - **Vertical tabs** for every session: status, agent, elapsed time, branch or folder. A ring marks a session that needs you (it failed, or finished since you last looked), and the tab title counts them. `Cmd`/`Ctrl` + `1`–`9` opens a tab in the focused pane; `Cmd`/`Ctrl` + `[` and `]` move focus.
 - **Split panes**: one, two or four terminals side by side. Each pane shows the session's steps (tool calls with their exact shell commands, file edits, stderr, errors) or the **raw output** of the agent process, line by line as it arrives.
@@ -164,11 +187,15 @@ Nexus reads MCP servers with `claude mcp list` and adds or removes project-scope
 
 Monochrome: black canvas, white ink in opacity steps, white as the only action colour, Geist and Geist Mono, near-square corners. The Home hero uses a pixel typeface and a WebGL "mosaic of light" sky adapted from *mosaic-prompt-template* by Kedhareswer Naidu (MIT); entrance motion is CSS, the sky pauses off screen and draws once under reduced motion, and a painted fallback covers browsers without WebGL. Every other page opens with the same band as a still CSS mosaic (no WebGL, since Nexus keeps visited pages mounted) and a pixel word that enters once a visit. Buttons step 1px on hover and sink on press, linked cards lift 2px, and controls are 44px tall on phones. Page copy passes the taste skill's copy-lint.
 
+## Backboard (optional)
+
+Put `BACKBOARD_API_KEY` in `.env.local` (ignored by git) and restart. Nexus calls `POST https://app.backboard.io/api/threads/messages` with memory off, only when you press Explain with Backboard picked. The key is not stored in the database, sent to the browser, or passed to agents and project scripts. `BACKBOARD_MODEL=provider/model` overrides Backboard's default model. The request and error handling are covered by tests with a stubbed server; it has not yet been run against a live key.
+
 ## Security
 
 - Binds to 127.0.0.1. A proxy rejects non-loopback `Host` headers (DNS rebinding) and state-changing requests that don't come from the Nexus page itself.
 - Runs only allowlisted executables (`claude`, `codex`, `ollama`, `git`, `node`, `npm`, `osascript`, `open` and the detected agent CLIs) with argument arrays, never a shell.
-- Never stores API keys or OAuth tokens. Credentials stay in each agent's own store. Account details from `claude auth status` are reduced to sign-in method and plan; email and organization IDs are dropped.
+- Never stores API keys or OAuth tokens in its database. The optional Backboard key stays in `.env.local`. Credentials stay in each agent's own store. Account details from `claude auth status` are reduced to sign-in method and plan; email and organization IDs are dropped.
 - Agent sessions run with `--permission-prompts none`, plan mode for read-only roles, `acceptEdits` for builders, and the shell and web tools blocked unless you allow them. Nexus never uses `--dangerously-skip-permissions`.
 - Logs, events, command previews and the audit trail redact keys, tokens, bearer headers and email addresses.
 - Installs, MCP changes, applying or discarding changes, check scripts and data reset each need explicit approval in the UI.

@@ -1,5 +1,6 @@
 "use client";
 
+import { Wait } from "@/components/wait";
 import { Picker } from "@/components/picker";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -8,7 +9,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, ArrowRightLeft, Bookmark, Check, CircleStop, Copy, Info, FileCode2, FlaskConical, GitMerge, MessageSquareReply, RotateCw, SquareTerminal, Trash2 } from "lucide-react";
 import { AgentMark, SessionBadge } from "@/components/agent-bits";
-import { Button, ConfirmDialog, Dialog, Drawer, Segmented, Spinner, Toast, cx, inputClass } from "@/components/ui";
+import { Button, ConfirmDialog, Dialog, Drawer, Segmented, Toast, cx, inputClass } from "@/components/ui";
+import { WhereNow } from "@/components/build-live";
+import { TalkPanel } from "@/components/talk-panel";
+import { usePicker } from "@/components/use-picker";
+import { Checkpoints } from "@/components/checkpoints";
+import { QuestionDock } from "@/components/question-dock";
 import { ReviewChanges } from "@/components/review-changes";
 import { useWorkspace } from "@/components/workspace-context";
 import { api, fmtNum, useApi } from "@/lib/client";
@@ -25,7 +31,7 @@ const active = (s: Session) => s.status === "running" || s.status === "starting"
 const SIGN_IN_CMD: Record<string, string> = { "claude-code": "claude auth login", codex: "codex login" };
 
 /** Says what went wrong in plain words and offers the fixes that apply. */
-function FailureHelp({ s, agent, agents, busy, onMove, onRetry, notify }: { s: Session; agent?: AgentStatus; agents: AgentStatus[]; busy: boolean; onMove: (agentId: string) => void; onRetry: () => void; notify: (m: string) => void }) {
+export function FailureHelp({ s, agent, agents, busy, onMove, onRetry, notify }: { s: Session; agent?: AgentStatus; agents: AgentStatus[]; busy: boolean; onMove: (agentId: string) => void; onRetry: () => void; notify: (m: string) => void }) {
   const kind = classifyFailure(s.error);
   const skipped = s.status === "cancelled" && s.error?.startsWith("Skipped because");
   const name = agent?.displayName ?? s.agentId;
@@ -405,7 +411,7 @@ function SessionLane({ s0, scripts, projectName, onChanged, notify }: { s0: Sess
   );
 }
 
-type ViewResp = { url: string | null; entry: string | null; devCommand: string | null; framework: string | null; path: string; version: number; error?: string };
+export type ViewResp = { url: string | null; entry: string | null; devCommand: string | null; framework: string | null; path: string; version: number; error?: string };
 
 /** One cursor colour per frame, like collaborators on a design canvas. */
 const CURSOR = ["#f5a08b", "#9ec9f7", "#a9e0b5", "#caa8f7", "#f4d68a", "#f7a8cf"];
@@ -425,7 +431,7 @@ function AgentCursor({ name, color, seed }: { name: string; color: string; seed:
 }
 
 /** One artboard on the canvas: a step's live output, or the builder's live page. */
-function CanvasFrame({ s, idx, picked, onPick, preview, big }: { s: Session; idx: number; picked: boolean; onPick: () => void; preview: ViewResp | null; big: boolean }) {
+function CanvasFrame({ s, idx, picked, onPick, preview, big, frame, pointing }: { s: Session; idx: number; picked: boolean; onPick: () => void; preview: ViewResp | null; big: boolean; frame?: React.Ref<HTMLIFrameElement>; pointing?: boolean }) {
   const { events, session } = useSessionStream(s.id);
   const cur = session ?? s;
   const { agents } = useWorkspace();
@@ -463,7 +469,7 @@ function CanvasFrame({ s, idx, picked, onPick, preview, big }: { s: Session; idx
           </>
         )}
         {big && preview?.url ? (
-          <iframe key={preview.version} src={preview.url} title="Live page" tabIndex={-1} className="pointer-events-none h-full min-h-[22rem] w-full bg-white" />
+          <iframe ref={frame} key={preview.version} src={preview.url} title="Live page" tabIndex={-1} className={cx(!pointing && "pointer-events-none", "h-full min-h-[22rem] w-full bg-white")} />
         ) : tail ? (
           <div ref={boxRef} className="h-full w-full overflow-hidden p-4 text-[13px] leading-relaxed whitespace-pre-wrap text-white/80 [mask-image:linear-gradient(to_bottom,transparent,black_30%)]">
             {tail}
@@ -492,6 +498,7 @@ function SwarmCanvas({ sessions, picked, onPick }: { sessions: Session[]; picked
   const hasOutput = !!target && ["running", "completed", "applied"].includes(target.status);
   const view = useApi<ViewResp>(hasOutput ? `/api/view?session=${target!.id}` : null, { interval: live ? 5000 : 0 });
   const v = view.data ?? null;
+  const { frame: pickFrame, on: pointing, setOn: setPointing } = usePicker(v?.url ?? null, [target?.workflowId, target?.id]);
   const big = target ?? ordered[ordered.length - 1];
   const others = ordered.filter((x) => x.id !== big?.id);
   return (
@@ -505,6 +512,11 @@ function SwarmCanvas({ sessions, picked, onPick }: { sessions: Session[]; picked
         <span className="text-[15px] text-white/80">{live ? `${ordered.filter((x) => x.status === "running").length} agents working in parallel` : "All agents finished"}</span>
         <span className="ml-auto flex gap-1.5">
           {v?.url && (
+            <button type="button" aria-pressed={pointing} onClick={() => setPointing(!pointing)} className={cx("btn-step rounded-[var(--radius-control)] border border-white/20 px-3 py-1.5 text-[13px]", pointing ? "bg-white text-black" : "text-white/85 hover:bg-white/10")}>
+              {pointing ? "Click what to change" : "Point at it"}
+            </button>
+          )}
+          {v?.url && (
             <a href={v.url} target="_blank" rel="noreferrer" className="btn-step rounded-[var(--radius-control)] border border-white/20 px-3 py-1.5 text-[13px] text-white/85 hover:bg-white/10">
               Open the page
             </a>
@@ -516,8 +528,8 @@ function SwarmCanvas({ sessions, picked, onPick }: { sessions: Session[]; picked
           )}
         </span>
       </div>
-      <div className="grid gap-x-6 gap-y-5 lg:grid-cols-12" style={{ gridAutoRows: "minmax(12rem, auto)" }}>
-        {big && <CanvasFrame s={big} idx={ordered.indexOf(big)} picked={picked === big.id} onPick={() => onPick(big.id)} preview={v} big />}
+      <div className="grid grid-cols-1 gap-x-6 gap-y-5 lg:grid-cols-12" style={{ gridAutoRows: "minmax(12rem, auto)" }}>
+        {big && <CanvasFrame s={big} idx={ordered.indexOf(big)} picked={picked === big.id} onPick={() => onPick(big.id)} preview={v} big frame={pickFrame} pointing={pointing} />}
         {others.map((x) => (
           <CanvasFrame key={x.id} s={x} idx={ordered.indexOf(x)} picked={picked === x.id} onPick={() => onPick(x.id)} preview={null} big={false} />
         ))}
@@ -575,7 +587,7 @@ export function RunDetail() {
     window.setTimeout(() => setToast(null), 4000);
   };
   if (wf.error && !wf.data) return <p className="text-bad">{wf.error}</p>;
-  if (!wf.data) return <Spinner />;
+  if (!wf.data) return <Wait kind="open" className="py-24" label="Opening the run" />;
   const { workflow, sessions, overlaps } = wf.data;
   const lanes = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   // One step on screen at a time: the one you picked, else the one that needs you, else the last builder.
@@ -592,6 +604,7 @@ export function RunDetail() {
           <summary className="btn-step cursor-pointer list-none rounded-[var(--radius-control)] border border-white/20 px-3 py-1.5 text-[14px] text-white/85 hover:bg-white/10">Prompt</summary>
           <pre className="term absolute right-0 z-20 mt-2 max-h-96 w-[min(90vw,720px)] overflow-auto rounded border border-line bg-canvas p-4 text-[13px] whitespace-pre-wrap text-ink-2">{workflow.brief}</pre>
         </details>
+        <Checkpoints workflow={id} live={sessions.some((x) => x.status === "running" || x.status === "starting")} onRestored={wf.reload} />
         <Button
           variant={workflow.saved ? "secondary" : "primary"}
           onClick={async () => {
@@ -604,6 +617,13 @@ export function RunDetail() {
         </Button>
       </header>
       <RunStatus sessions={sessions} onPick={setPick} />
+      <div className="mb-4 grid grid-cols-1 items-start gap-4 lg:grid-cols-[1.3fr_1fr]">
+        <WhereNow sessions={sessions} />
+        <div className="flex min-w-0 flex-col gap-4">
+          <TalkPanel workflow={id} current={lanes.find((x) => x.status === "running") ?? [...lanes].reverse().find((x) => x.permissions.editFiles && x.startedAt)} live={sessions.some(active)} name="the agent" canPoint />
+          <QuestionDock id={id} kind="run" live={sessions.some(active)} />
+        </div>
+      </div>
       <SwarmCanvas sessions={sessions} picked={shown} onPick={setPick} />
       {overlaps.length > 0 && (
         <p role="alert" className="mb-4 flex items-start gap-2 rounded-[var(--radius-control)] border border-warn/40 bg-warn-soft px-4 py-3 text-[15px] text-ink">

@@ -1,10 +1,11 @@
 "use client";
 
+import { Wait } from "@/components/wait";
 import Link from "next/link";
 import { useState } from "react";
 import { Bookmark, Play, Search } from "lucide-react";
 import { SessionBadge } from "@/components/agent-bits";
-import { EmptyState, PageHeader, Segmented, Spinner, cx, inputClass } from "@/components/ui";
+import { EmptyState, PageHeader, Segmented, cx, inputClass } from "@/components/ui";
 import { useWorkspace } from "@/components/workspace-context";
 import { timeAgo, useApi, usePref } from "@/lib/client";
 import type { Session, Workflow } from "@/lib/types";
@@ -49,7 +50,7 @@ export function RunsView() {
       </div>
       {error && <p className="mb-3 text-bad">{error}</p>}
       {loading && !data ? (
-        <Spinner />
+        <Wait kind="list" className="py-16" label="Loading runs" />
       ) : items.length === 0 ? (
         <EmptyState
           icon={<Play size={28} />}

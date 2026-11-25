@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { z } from "zod";
 import { bad, body } from "@/lib/api";
+import { saveImages } from "@/runtime/ask";
 import { canLaunch, detectAll, getAdapter } from "@/runtime/agents/registry";
 import { createWorkflow, listSessions, listWorkflows } from "@/runtime/sessions";
 import { getProject } from "@/runtime/workspace";
@@ -11,6 +12,7 @@ const schema = z.object({
   preset: z.enum(PRESETS),
   goal: z.string().trim().min(1).max(8000),
   brief: z.string().trim().min(1).max(40000),
+  images: z.array(z.string().max(12_000_000)).max(6).default([]),
   skills: z.array(z.string().max(200)).max(12),
   concise: z.enum(CONCISE_MODES),
   permissions: z.object({ editFiles: z.boolean(), runShell: z.boolean(), network: z.boolean(), isolate: z.boolean() }),
@@ -51,6 +53,12 @@ export async function POST(req: Request) {
     const refs = [t.dependsOnIndex, t.shareWorktreeOfIndex, ...(t.afterIndexes ?? [])].filter((x): x is number => x != null);
     if (refs.some((r) => r >= i)) return bad("A step can only depend on an earlier step.");
   }
-  const r = await createWorkflow(p.data);
+  let attachments: string[];
+  try {
+    attachments = saveImages(p.data.images);
+  } catch (e) {
+    return bad((e as Error).message);
+  }
+  const r = await createWorkflow({ ...p.data, attachments });
   return Response.json(r);
 }

@@ -1,10 +1,13 @@
 "use client";
 
+import { Wait } from "@/components/wait";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitMerge, Sparkles, TriangleAlert } from "lucide-react";
-import { Button, ConfirmDialog, Drawer, Spinner, cx } from "./ui";
+import { GitMerge, ShieldCheck, Sparkles, TriangleAlert, Users } from "lucide-react";
+import { AskFriend } from "./ask-friend";
+import { Button, ConfirmDialog, Drawer, cx } from "./ui";
 import { api } from "@/lib/client";
 import { tidyPath } from "@/lib/format";
+import type { Proof, ProofItem } from "@/lib/proof-types";
 import type { Session } from "@/lib/types";
 
 /**
@@ -48,6 +51,75 @@ export function PatchView({ patch, file }: { patch: string; file: string | null 
   );
 }
 
+/** Does the diff back up what the agent said? Checks from src/runtime/proof.ts. */
+function ProofBox({ sessionId, onFile }: { sessionId: string; onFile: (f: string) => void }) {
+  const [proof, setProof] = useState<Proof | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [npm, setNpm] = useState<{ items: ProofItem[]; checked: number } | "busy" | null>(null);
+  useEffect(() => {
+    let off = false;
+    api<Proof>(`/api/sessions/${sessionId}/proof`).then((p) => !off && setProof(p), (e: Error) => !off && setErr(e.message));
+    return () => {
+      off = true;
+    };
+  }, [sessionId]);
+  if (err) return <p className="text-[12.5px] text-bad">Proof checks failed: {err}</p>;
+  if (!proof) return <Wait kind="scan" small label="Checking the agent's claims" />;
+  const extra = npm && npm !== "busy" ? npm.items : [];
+  const items = [...proof.items, ...extra];
+  const bad = items.some((i) => i.level === "bad");
+  const row = (i: ProofItem, n: number) => (
+    <li key={n} className="text-[13px]">
+      <span className={i.level === "bad" ? "text-bad" : "text-warn"}>{i.text}</span>
+      {i.file && (
+        <button type="button" className="ml-1.5 font-mono text-[12px] break-all text-ink-2 underline underline-offset-2" onClick={() => onFile(i.file!)}>
+          {i.file}
+          {i.line ? `:${i.line}` : ""}
+        </button>
+      )}
+    </li>
+  );
+  return (
+    <section aria-label="Proof checks" className={cx("rounded-[var(--radius-control)] border px-3 py-2.5", bad ? "border-bad/50 bg-bad-soft" : "border-line")}>
+      <p className="flex items-center gap-2 text-[13.5px] font-medium">
+        {items.length ? <TriangleAlert size={15} aria-hidden className={bad ? "text-bad" : "text-warn"} /> : <ShieldCheck size={15} aria-hidden className="text-ok" />}
+        {items.length ? `${items.length} thing${items.length === 1 ? "" : "s"} to check before you trust this` : "No false claims, weakened tests, secrets or unfinished code found"}
+      </p>
+      {items.length > 0 && <ul className="mt-1 flex flex-col gap-0.5">{items.slice(0, 4).map(row)}</ul>}
+      {items.length > 4 && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-[12.5px] text-ink-2">{items.length - 4} more</summary>
+          <ul className="mt-1 flex flex-col gap-0.5">{items.slice(4).map(row)}</ul>
+        </details>
+      )}
+      <p className="mt-1 text-[12.5px] text-ink-2">
+        {proof.evidence.length ? `Test run seen: ${proof.evidence[0]}.` : "Nexus saw no test run."} These are pattern checks, not proof the code is right.
+        {proof.truncated ? " The diff was cut off, so some files were not checked." : ""}
+      </p>
+      {proof.newPackages.length > 0 &&
+        (npm && npm !== "busy" ? (
+          <p className="mt-1 text-[12.5px] text-ink-2">Checked {npm.checked} of {proof.newPackages.length} new packages on npm.</p>
+        ) : (
+          <Button
+            size="sm"
+            disabled={npm === "busy"}
+            onClick={async () => {
+              setNpm("busy");
+              try {
+                setNpm(await api(`/api/sessions/${sessionId}/proof`, { method: "POST" }));
+              } catch (e) {
+                setNpm(null);
+                setErr((e as Error).message);
+              }
+            }}
+          >
+            {npm === "busy" ? "Checking…" : `Look up ${proof.newPackages.length} new package${proof.newPackages.length === 1 ? "" : "s"} on npm`}
+          </Button>
+        ))}
+    </section>
+  );
+}
+
 export function ReviewChanges({
   s,
   open,
@@ -72,6 +144,7 @@ export function ReviewChanges({
   const touched = useRef(false);
   const [file, setFile] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [friend, setFriend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -161,19 +234,24 @@ export function ReviewChanges({
           </div>
         }
         footer={
-          canApply && remaining.length ? (
+          files.length ? (
             <div className="flex flex-wrap items-center justify-end gap-2">
               {err && <p className="mr-auto max-w-sm text-[12.5px] text-bad whitespace-pre-wrap">{err}</p>}
-              {onDiscard && !applied.size && <Button onClick={onDiscard}>Discard all</Button>}
-              <Button variant="primary" disabled={!chosen.length || busy} onClick={() => setConfirm(true)}>
-                <GitMerge size={14} aria-hidden /> {remaining.length === 1 ? "Apply 1 file" : chosen.length === remaining.length ? `Apply all ${chosen.length} files` : `Apply ${chosen.length} of ${remaining.length} files`}
+              <Button onClick={() => setFriend(true)}>
+                <Users size={14} aria-hidden /> Ask a friend
               </Button>
+              {onDiscard && canApply && !applied.size && <Button onClick={onDiscard}>Discard all</Button>}
+              {canApply && remaining.length > 0 && (
+                <Button variant="primary" disabled={!chosen.length || busy} onClick={() => setConfirm(true)}>
+                  <GitMerge size={14} aria-hidden /> {remaining.length === 1 ? "Apply 1 file" : chosen.length === remaining.length ? `Apply all ${chosen.length} files` : `Apply ${chosen.length} of ${remaining.length} files`}
+                </Button>
+              )}
             </div>
           ) : undefined
         }
       >
         {!review || !diff ? (
-          err ? <p className="text-[13px] text-bad">{err}</p> : <Spinner />
+          err ? <p className="text-[13px] text-bad">{err}</p> : <Wait kind="scan" className="py-12" label="Reading the changes" />
         ) : diff.note || review.note && !files.length ? (
           <p className="text-[13px] text-ink-2">{diff.note ?? review.note}</p>
         ) : !files.length ? (
@@ -194,6 +272,8 @@ export function ReviewChanges({
               {doubts.length > 0 && <p className="mt-0.5 text-[12.5px] text-ink-2">The local model doubts {doubts.length} more. Check {doubts.length === 1 ? "it" : "them"} before you apply; {doubts.length === 1 ? "it stays" : "they stay"} checked.</p>}
               {applied.size > 0 && <p className="mt-0.5 text-[12.5px] text-ink-2">{applied.size} already applied to {projectName}.</p>}
             </div>
+
+            <ProofBox sessionId={s.id} onFile={setFile} />
 
             <ul className="flex flex-col gap-1">
               {files.map((f) => {
@@ -237,6 +317,7 @@ export function ReviewChanges({
           </div>
         )}
       </Drawer>
+      <AskFriend s={s} open={friend} onClose={() => setFriend(false)} onChanged={onChanged} notify={notify} />
       <ConfirmDialog
         open={confirm}
         onCancel={() => setConfirm(false)}

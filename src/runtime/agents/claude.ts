@@ -1,3 +1,5 @@
+import type { PlanItem } from "@/lib/where";
+import { isTestCommand } from "@/lib/test-command";
 import fs from "node:fs";
 import path from "node:path";
 import { commandPreview, killTree, onLines, run, spawnLong, which } from "../proc";
@@ -149,6 +151,19 @@ export const claudeAdapter: AgentAdapter = {
     };
     let resultError: string | undefined;
     let gotResult = false;
+    // Claude Code's task tools, read as one plan. TaskUpdate names tasks by creation order.
+    const tasks: PlanItem[] = [];
+    const planFrom = (tool: string, inp: Record<string, unknown>): PlanItem[] | null => {
+      const st = (v: unknown): PlanItem["status"] => (v === "completed" ? "done" : v === "in_progress" ? "active" : "todo");
+      if (tool === "TodoWrite" && Array.isArray(inp.todos)) return (inp.todos as { content?: string; status?: string }[]).map((t) => ({ text: String(t.content ?? "").slice(0, 120), status: st(t.status) }));
+      if (tool === "TaskCreate" && typeof inp.subject === "string") tasks.push({ text: inp.subject.slice(0, 120), status: "todo" });
+      else if (tool === "TaskUpdate") {
+        const t = tasks[Number(inp.taskId) - 1];
+        if (!t) return null;
+        if (inp.status) t.status = st(inp.status);
+      } else return null;
+      return tasks.map((t) => ({ ...t }));
+    };
     const quota: { window: string; utilization: number; resetsAt?: string; status?: string }[] = [];
 
     onLines(child.stdout!, (line) => {
@@ -174,20 +189,25 @@ export const claudeAdapter: AgentAdapter = {
         }
       } else if (type === "assistant") {
         flush();
-        const content = ((o.message as { content?: unknown[] })?.content ?? []) as { type: string; name?: string; input?: Record<string, unknown> }[];
+        const content = ((o.message as { content?: unknown[] })?.content ?? []) as { type: string; id?: string; name?: string; input?: Record<string, unknown> }[];
         for (const b of content) {
           if (b.type !== "tool_use" || !b.name) continue;
           const inp = b.input ?? {};
-          const target = (inp.file_path ?? inp.path ?? inp.notebook_path ?? inp.command ?? inp.pattern ?? inp.url ?? inp.description) as string | undefined;
-          sink.emit("tool", `${b.name}${target ? `: ${short(target, 140)}` : ""}`, { tool: b.name });
+          const target = (inp.file_path ?? inp.path ?? inp.notebook_path ?? inp.command ?? inp.pattern ?? inp.url ?? inp.skill ?? inp.description) as string | undefined;
+          const plan = planFrom(b.name, inp);
+          if (plan) {
+            sink.emit("status", "Updated its plan", { plan });
+            continue;
+          }
+          sink.emit("tool", `${b.name}${target ? `: ${short(target, 140)}` : ""}`, { tool: b.name, id: b.id, ...(typeof inp.command === "string" ? { test: isTestCommand(inp.command) } : {}) });
           if (EDIT_TOOLS.has(b.name) && typeof (inp.file_path ?? inp.notebook_path) === "string") {
             sink.emit("file", String(inp.file_path ?? inp.notebook_path), { tool: b.name });
           }
         }
       } else if (type === "user") {
-        const content = ((o.message as { content?: unknown[] })?.content ?? []) as { type: string; is_error?: boolean; content?: unknown }[];
+        const content = ((o.message as { content?: unknown[] })?.content ?? []) as { type: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[];
         for (const b of content) {
-          if (b.type === "tool_result" && b.is_error) sink.emit("tool-result", `Tool error: ${short(b.content, 300)}`, { error: true });
+          if (b.type === "tool_result" && b.is_error) sink.emit("tool-result", `Tool error: ${short(b.content, 300)}`, { error: true, id: b.tool_use_id });
         }
       } else if (type === "rate_limit_event") {
         const info = o.rate_limit_info as { unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number; status?: string }> } | undefined;

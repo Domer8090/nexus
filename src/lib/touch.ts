@@ -25,7 +25,9 @@ export function touchOf(e: AgentEvent, cwd: string): Touch | null {
     else return null;
     target = m[2];
   } else return null;
-  target = target.trim().replace(/…$/, "");
+  target = target.trim();
+  // A cut-off path names the wrong file; edits also arrive whole as file events.
+  if (target.endsWith("…")) return null;
   const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
   let rel = target.startsWith(root) ? target.slice(root.length) : target.startsWith("/") ? null : target.replace(/^\.\//, "");
   if (!rel || rel.startsWith("..")) return null;

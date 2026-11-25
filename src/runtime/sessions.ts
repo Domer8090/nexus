@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { getDb } from "./db";
 import { audit } from "./audit";
@@ -6,10 +7,15 @@ import { newId } from "./ids";
 import { redact } from "./redact";
 import { getSettings } from "./settings";
 import { canLaunch, detectAll, getAdapter, invalidateDetection } from "./agents/registry";
+import { ASK_INSTRUCTION } from "@/lib/ask-types";
+import { answersContext, watchText } from "./ask-store";
+import { timeContext } from "@/lib/modes";
+import { PLAN_INSTRUCTION } from "@/lib/where";
 import { bestModel } from "@/lib/model-pick";
 import { startPowerWatch, waitForNetwork } from "./power";
 import { describe, limitsFor, resetsAt } from "./limits";
 import { notesContext } from "./notes";
+import { takeCheckpoint } from "./checkpoints";
 import { MAP_FILE, MAP_INSTRUCTION, buildMap, writeMap } from "./project-map";
 import { canHandOff, classifyFailure } from "@/lib/failure";
 import { parseReset } from "@/lib/limit-reset";
@@ -61,6 +67,7 @@ export const bus = state.bus;
 // ---------- persistence ----------
 
 export function saveSession(s: Session) {
+  if (["queued", "starting", "running"].includes(s.status)) s = { ...s, ownerPid: process.pid };
   getDb()
     .prepare("INSERT INTO sessions (id, data, project_id, workflow_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data")
     .run(s.id, JSON.stringify(s), s.projectId, s.workflowId, s.createdAt);
@@ -104,6 +111,7 @@ export function addEvent(sessionId: string, kind: AgentEventKind, text: string, 
   const clean = redact(text).slice(0, 20_000);
   const r = getDb().prepare("INSERT INTO events (session_id, at, kind, text, data) VALUES (?, ?, ?, ?, ?)").run(sessionId, at, kind, clean, data ? JSON.stringify(data) : null);
   const ev: AgentEvent = { id: Number(r.lastInsertRowid), sessionId, at, kind, text: clean, data };
+  if (kind === "text" || kind === "status" || kind === "tool") watchText(sessionId, kind === "text" ? clean : "", kind !== "text", () => getSession(sessionId));
   bus.emit(`events:${sessionId}`, ev);
   bus.emit("event", ev);
   return ev;
@@ -122,16 +130,28 @@ export function listEvents(sessionId: string, afterId = 0): AgentEvent[] {
   ).map((r) => ({ id: r.id, sessionId: r.session_id, at: r.at, kind: r.kind, text: r.text, data: r.data ? JSON.parse(r.data) : undefined }));
 }
 
+/** Another live Nexus on this Mac (the app next to `npm run dev`) still runs this step. */
+function ownedElsewhere(pid: number | undefined) {
+  if (!pid || pid === process.pid) return false;
+  try {
+    return /node|next|nexus/i.test(execFileSync("/bin/ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" }));
+  } catch {
+    return false;
+  }
+}
+
 /** After a server restart, nothing from before can still be running. Say so instead of pretending. */
 function recover() {
   if (state.recovered) return;
   state.recovered = true;
+  // Agents run in their own process groups, so stop them when Nexus quits.
+  process.once("exit", () => state.handles.forEach((h) => h.cancel()));
   const timer = setInterval(runDueResets, 20_000);
   timer.unref?.();
   const rows = getDb().prepare("SELECT data FROM sessions").all() as { data: string }[];
   for (const r of rows) {
     const s = JSON.parse(r.data) as Session;
-    if (["running", "starting", "queued"].includes(s.status) && !state.handles.has(s.id)) {
+    if (["running", "starting", "queued"].includes(s.status) && !state.handles.has(s.id) && !ownedElsewhere(s.ownerPid)) {
       s.status = "failed";
       s.error = "Nexus restarted while this session was active. Its process is no longer attached.";
       s.endedAt = s.endedAt ?? new Date().toISOString();
@@ -216,6 +236,7 @@ export type TaskSpec = {
 };
 
 export async function createWorkflow(input: {
+  id?: string;
   projectId: string;
   preset: PresetId;
   goal: string;
@@ -229,7 +250,7 @@ export async function createWorkflow(input: {
   const project = getProject(input.projectId);
   if (!project) throw new Error("Project not found.");
   const wf: Workflow = {
-    id: newId("wf"),
+    id: input.id ?? newId("wf"),
     projectId: project.id,
     name: input.goal.split("\n")[0].slice(0, 80),
     preset: input.preset,
@@ -285,7 +306,7 @@ export async function createWorkflow(input: {
 }
 
 /** Starts a follow-up turn on a finished session, in the same folder, resuming the agent's native session. */
-export function revise(sessionId: string, feedback: string): Session {
+export function revise(sessionId: string, feedback: string, images: string[] = []): Session {
   const parent = getSession(sessionId);
   if (!parent) throw new Error("Session not found.");
   const adapter = getAdapter(parent.agentId);
@@ -294,6 +315,9 @@ export function revise(sessionId: string, feedback: string): Session {
     ...parent,
     id: newId("ses"),
     role: "revise",
+    inbox: [],
+    steering: false,
+    attachments: images,
     title: `Revision of ${parent.title}`,
     brief: feedback,
     status: "queued",
@@ -358,6 +382,10 @@ export async function reassign(sessionId: string, agentId: string, model: string
 }
 
 export function cancel(sessionId: string) {
+  if (getSession(sessionId)?.steering) update(sessionId, { steering: false });
+  const starting = getSession(sessionId)?.status === "starting";
+  // Before its process exists there is only a placeholder; dropping it makes start() give up.
+  if (starting) state.handles.delete(sessionId);
   const h = state.handles.get(sessionId);
   state.queue = state.queue.filter((id) => id !== sessionId);
   if (h) {
@@ -368,9 +396,72 @@ export function cancel(sessionId: string) {
     if (s && (s.status === "queued" || s.status === "starting")) {
       update(sessionId, { status: "cancelled", endedAt: new Date().toISOString(), error: "Stopped before it started." });
       cascadeBlocked(sessionId);
+      if (starting) pump();
     }
   }
   audit("session.cancel", sessionId);
+}
+
+/** Everything the person wrote to a run, oldest first. */
+export function userMessages(workflowId: string) {
+  const out: { id: number; text: string; images: number; step: string; read: boolean; at: string }[] = [];
+  for (const s of listSessions({ workflowId })) {
+    const rows = getDb().prepare("SELECT id, at, text, data FROM events WHERE session_id = ? AND kind = 'system' AND data LIKE '%\"user\":true%' ORDER BY id").all(s.id) as { id: number; at: string; text: string; data: string }[];
+    const unread = s.inbox?.length ?? 0;
+    rows.forEach((r, i) => out.push({ id: r.id, at: r.at, text: r.text, images: (JSON.parse(r.data) as { images?: number }).images ?? 0, step: s.title, read: i < rows.length - unread }));
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+/**
+ * The person's message to a step, at any time. A working step is paused and continues in its own
+ * session with the message (now), or gets it when it finishes; a waiting step gets it when it
+ * starts; a finished one continues in the same folder.
+ */
+export function say(sessionId: string, text: string, images: string[], now: boolean): Session {
+  const s = getSession(sessionId);
+  if (!s) throw new Error("Session not found.");
+  const note = (id: string) => addEvent(id, "system", text, { user: true, images: images.length });
+  if (["completed", "applied"].includes(s.status)) {
+    if (!s.nativeSessionId || !getAdapter(s.agentId)?.meta.nexusCapabilities.includes("resume")) throw new Error("This agent's session can't be continued. Start a new task instead.");
+    if (!fs.existsSync(s.cwd)) throw new Error("This step's folder is gone.");
+    const r = revise(s.id, text, images);
+    note(r.id);
+    return r;
+  }
+  if (s.status === "discarded") throw new Error("This step's changes were discarded. Start a new task instead.");
+  const next = update(s.id, (x) => ({ inbox: [...(x.inbox ?? []), { text, images }] }))!;
+  note(s.id);
+  const h = state.handles.get(s.id);
+  if (now && s.status === "running" && h) {
+    update(s.id, { steering: true });
+    h.cancel();
+    addEvent(s.id, "system", "Pausing to read your message.");
+  }
+  return getSession(next.id)!;
+}
+
+/** Stops every step of a run: the working one first, then the ones waiting. */
+export function stopWorkflow(workflowId: string) {
+  const all = listSessions({ workflowId }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (const s of all) if (s.status === "running" || s.status === "starting") cancel(s.id);
+  for (const s of all) if (getSession(s.id)?.status === "queued") cancel(s.id);
+}
+
+/** Puts every stopped step back in the queue. Finished steps stay finished. */
+export function resumeWorkflow(workflowId: string) {
+  const all = listSessions({ workflowId }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (all.some((s) => state.handles.has(s.id))) throw new Error("Still stopping. Try again in a moment.");
+  const stopped = all.filter((s) => s.status === "cancelled" || (s.status === "failed" && s.inbox?.length));
+  if (!stopped.length) throw new Error("Nothing is stopped.");
+  // All back in line before any starts, so a later step never sees an earlier one as cancelled.
+  for (const s of stopped) update(s.id, { status: "queued", error: null, summary: null, usage: null, startedAt: null, endedAt: null, notice: null, retryAt: null, ignoreLimit: false });
+  for (const s of stopped) {
+    addEvent(s.id, "system", "Resumed.");
+    if (!state.queue.includes(s.id)) state.queue.push(s.id);
+  }
+  audit("workflow.resume", workflowId);
+  pump();
 }
 
 export function markReview(sessionId: string, status: "applied" | "discarded") {
@@ -599,15 +690,28 @@ async function start(s0: Session) {
   }
 
   const parent = s.parentSessionId ? getSession(s.parentSessionId) : null;
-  let ctx = await contextFor(s);
+  const inbox = s.inbox ?? [];
+  // Continuing its own session: it already has the brief, the context and its place in the work.
+  const continues = inbox.length > 0 && !!s.nativeSessionId && adapter.meta.nexusCapabilities.includes("resume") ? s.nativeSessionId : null;
+  let ctx = continues ? undefined : await contextFor(s);
+  const hack = getSettings().hackathon;
+  const clock = hack && hack.workflowId === s.workflowId ? timeContext(hack, Date.now()) : null;
+  if (clock) ctx = [clock, ctx].filter(Boolean).join("\n\n");
+  // Answers the user gave on the side, up to this moment.
+  const decided = s.workflowId && s.role !== "revise" && !continues ? answersContext(s.workflowId) : null;
+  if (decided) {
+    ctx = [decided, ctx].filter(Boolean).join("\n\n---\n\n");
+    addEvent(s.id, "system", "Gave the agent your answers so far.");
+  }
   // The user's project notes go to every new step, so they don't explain the same rules twice.
-  const notes = s.role === "revise" ? null : notesContext(s.projectId);
+  const notes = s.role === "revise" || continues ? null : notesContext(s.projectId);
   if (notes) {
     ctx = [notes, ctx].filter(Boolean).join("\n\n---\n\n");
     addEvent(s.id, "system", `Gave the agent your project notes (${notes.split("\n").length - 1} lines).`);
   }
+  if (s.permissions.editFiles && s.role !== "assets" && !continues && adapter.meta.kind !== "local-runtime") ctx = [PLAN_INSTRUCTION, ASK_INSTRUCTION, ctx].filter(Boolean).join("\n\n");
   // One-file project map, so the agent doesn't spend its turn listing folders and opening files.
-  if (getSettings().projectMap && s.role !== "revise") {
+  if (getSettings().projectMap && s.role !== "revise" && !continues) {
     try {
       if (adapter.meta.kind === "local-runtime") {
         // A local model can't open files, so it gets a short excerpt inline.
@@ -626,21 +730,33 @@ async function start(s0: Session) {
     }
   }
   if (state.handles.get(s.id) !== placeholder) return; // cancelled meanwhile
+  // Messages that came in while it was getting ready are read too.
+  const mail = getSession(s.id)?.inbox ?? [];
+  const pics = mail.flatMap((m) => m.images);
+  const attachments = [...(s.attachments ?? []), ...pics];
+  let brief = s.brief;
+  if (mail.length) {
+    const said = `Message from the user:\n${mail.map((m) => m.text).join("\n\n")}`;
+    brief = continues ? `${said}\n\nDo this, keep what already works, then carry on with your task from where you stopped. Keep your progress list up to date.` : `${s.brief}\n\n${said}`;
+    update(s.id, { inbox: [], steering: false });
+  }
+  const unseen = attachments.filter((f) => !brief.includes(f));
+  if (unseen.length) brief += `\n\nPictures from the user. Look at them before you change anything; red marks show what they mean:\n${unseen.map((f) => `- ${f}`).join("\n")}`;
   const sid = s.id;
   let handle: RunningHandle;
   try {
     handle = adapter.launch(
       {
         sessionId: sid,
-        brief: s.brief,
+        brief,
         cwd: s.cwd,
         permissions: s.permissions,
         concise: s.conciseMode,
         model: s.model,
         skills: s.skills,
-        resumeNativeId: parent?.nativeSessionId ?? null,
+        resumeNativeId: continues ?? parent?.nativeSessionId ?? null,
         context: ctx,
-        attachments: s.attachments,
+        attachments,
         lean: getSettings().leanContext,
       },
       {
@@ -662,6 +778,22 @@ async function start(s0: Session) {
   const result = await handle.done;
   state.handles.delete(sid);
   const cancelled = result.error === "Stopped by you.";
+  const after = getSession(sid);
+  if (after && after.permissions.editFiles && (result.ok || (cancelled && after.steering))) {
+    try {
+      await takeCheckpoint(after.cwd, result.ok ? after.title : `${after.title}, before your message`, after.workflowId ?? sid);
+    } catch (e) {
+      addEvent(sid, "system", `No checkpoint: ${(e as Error).message}`);
+    }
+  }
+  if (after?.inbox?.length && (result.ok || (cancelled && after.steering))) {
+    // Goes before the steps that wait on this one.
+    update(sid, { status: "queued", error: null, steering: false });
+    addEvent(sid, "system", "Continuing with your message.");
+    state.queue.unshift(sid);
+    pump();
+    return;
+  }
   if (!result.ok && !cancelled && (await handOff(sid, result.error ?? ""))) {
     pump();
     return;

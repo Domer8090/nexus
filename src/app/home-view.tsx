@@ -144,7 +144,7 @@ export function HomeView() {
           </div>
           <p className="mt-6 max-w-md text-[15px] leading-relaxed font-light text-white/70">Your installed coding agents and a local model plan, build and review it together. On this computer, with their own sign-in.</p>
 
-          <div className="mt-7 w-full max-w-3xl rounded-[var(--radius-panel)] border border-white/15 bg-black/60 p-3 backdrop-blur-xl focus-within:border-white/40">
+          <div data-tour="composer" className="mt-7 w-full max-w-3xl rounded-[var(--radius-panel)] border border-white/15 bg-black/60 p-3 backdrop-blur-xl focus-within:border-white/40">
             <label htmlFor="home-goal" className="sr-only">
               Describe what you want built
             </label>
@@ -210,7 +210,7 @@ export function HomeView() {
 
       {setupNeeded && <Onboarding onPick={() => setPicker(true)} />}
 
-      <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
         <section aria-labelledby="act" className="panel p-4">
           <div className="mb-3 flex items-baseline justify-between">
             <div>

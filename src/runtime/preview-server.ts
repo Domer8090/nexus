@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { PICK_SCRIPT } from "./pick-script";
 import { getSession } from "./sessions";
 import { getProject } from "./workspace";
 
@@ -138,6 +139,14 @@ function handler(port: number) {
       const st = fs.statSync(real);
       if (!st.isFile()) return send(res, 404, "Not found");
       if (st.size > 64 * 1024 * 1024) return send(res, 413, "File too large to preview");
+      // Inside Nexus the page gets the "point at it" script. Opened on its own, it is served untouched.
+      if (/\.html?$/i.test(real) && req.headers["sec-fetch-dest"] === "iframe" && st.size < 4 * 1024 * 1024 && req.method === "GET") {
+        const html = fs.readFileSync(real, "utf8");
+        const at = html.search(/<\/body>(?![\s\S]*<\/body>)/i);
+        const out = Buffer.from(at >= 0 ? html.slice(0, at) + PICK_SCRIPT + html.slice(at) : html + PICK_SCRIPT);
+        res.writeHead(200, { "content-type": MIME[".html"], "content-length": out.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return res.end(out);
+      }
       res.writeHead(200, {
         "content-type": MIME[path.extname(real).toLowerCase()] ?? "application/octet-stream",
         "content-length": st.size,
