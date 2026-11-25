@@ -1,0 +1,15 @@
+# What developers complain about, and what Nexus does
+
+| Complaint | Evidence | In Nexus |
+|---|---|---|
+| The agent says "done, tests pass" without running them | Issue reports such as [claudeissues #25305](https://claudeissues.com/issue/25305-sessions-repeatedly-claim-work-is-done-without-verifying-causing-75-rework-rate) and [#48027](https://claudeissues.com/issue/48027-claude-claims-fixes-work-without-testing-ships-broken-code-to-user) | Proof checks compare the claim with the commands Nexus recorded |
+| Almost-right answers | [Stack Overflow's 2025 survey, via The Register](https://www.theregister.com/2025/07/29/coders_are_using_ai_tools/) | Proof checks, scope guard |
+| Checking the code is now the slow part | [Sonar's State of Code survey, 2026](https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding/) | Findings first, linked to the file and line |
+| Code ships before anyone understands it | [InfoQ on an Undo/Coleman Parkes survey, 2026](https://www.infoq.com/news/2026/10/survey-complex-codebases-agents/) | Explain, then a three-question check |
+| Weakened tests, invented packages, leaked secrets | No measured rate found in this search; included because the harm is high | Proof checks, npm lookup |
+| Going back destroys work, or changes you made outside the agent | [claudeissues #28078](https://claudeissues.com/issue/28078-bug-rewind-in-one-session-silently-destroys-uncommitted-changes-made-by-another), [#64615](https://claudeissues.com/issue/64615-bug-rewind-esc-esc-silently-reverts-loses-code-destructive-restore-code-and-conv), [#16098](https://claudeissues.com/issue/16098-claude-code-incorrectly-reverted-users-uncommitted-work-while-debugging) | Go back: a restore point after each step, a confirmation, and the present is saved first. Blocked while an agent works in the folder |
+| Usage limits arrive without warning | [DevClass on Anthropic's statement](https://www.devclass.com/ai-ml/2026/04/01/anthropic-admits-claude-code-users-hitting-usage-limits-way-faster-than-expected/5213575) | Limit warnings, hand-off to another agent, waiting for the reset (built earlier) |
+| No working demo at the end | [A hackathon post-mortem](https://humaninference.substack.com/p/why-i-didnt-win-the-opus-47-hackathon?open=false) | Every step is told the time left and to get the demo path working first. Late steps get a feature freeze |
+| Submissions lose out over missing or overlong videos, missing code, a single commit | [Devfolio's guide](https://guide.devfolio.co/docs/guide/participating-in-hackathons/judging-1), [HackHCC's guide](https://hackhcc.gitbook.io/hackhcc-docs/other-resources/submission-and-judging-guide), [Google's forum](https://discuss.ai.google.dev/t/top-reasons-why-app-submissions-may-be-disqualified-or-miss-out-on-awards/38512) | Ready? tab: ten checks, commit as you go, and a record of AI use |
+
+Issue reports are anecdotes, not rates. Survey figures come from search summaries of the linked pages. Earlier research: [reddit-pain-points.md](reddit-pain-points.md).

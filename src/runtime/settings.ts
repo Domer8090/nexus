@@ -1,9 +1,13 @@
 import { kvGet, kvSet } from "./db";
+import { expireHackathon } from "@/lib/modes";
 import { DEFAULT_SETTINGS, type Settings } from "@/lib/types";
 
 export function getSettings(): Settings {
   const s = kvGet<Partial<Settings>>("settings") ?? {};
-  return { ...DEFAULT_SETTINGS, ...s, defaultPermissions: { ...DEFAULT_SETTINGS.defaultPermissions, ...(s.defaultPermissions ?? {}) } };
+  const merged: Settings = { ...DEFAULT_SETTINGS, ...s, defaultPermissions: { ...DEFAULT_SETTINGS.defaultPermissions, ...(s.defaultPermissions ?? {}) } };
+  const next = expireHackathon(merged, Date.now());
+  if (next !== merged) kvSet("settings", next);
+  return next;
 }
 
 export function saveSettings(patch: Partial<Settings>) {

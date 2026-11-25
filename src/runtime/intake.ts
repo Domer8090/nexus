@@ -79,8 +79,8 @@ const overlap = (a: string, b: string) => {
 /** Asks the light local model for up to 3 questions specific to this goal that the classifier didn't cover. */
 export async function modelQuestions(model: string, goal: string, existing: IntakeQuestion[]): Promise<IntakeQuestion[]> {
   const system =
-    "You help a person describe software they want an AI coding agent to build. Ask short clarifying questions that change what gets built. Each question has 2 to 4 short answer options. Never ask about budget, deadlines or API keys. Reply in JSON.";
-  const prompt = `Request: """${goal.slice(0, 2000)}"""\n\nAlready asked:\n${existing.map((q) => `- ${q.text}`).join("\n") || "- nothing"}\n\nWrite up to 3 NEW questions specific to this request that are not already asked.`;
+    "You help a person describe software they want an AI coding agent to build. Think about where a coding agent would get stuck or have to guess, and ask short questions about exactly that. Never ask what the request or the decisions already say. Each question has 2 to 4 short answer options. Never ask about budget, deadlines or API keys. Reply in JSON.";
+  const prompt = `Request: """${goal.slice(0, 2000)}"""\n\nAlready asked:\n${existing.slice(-14).map((q) => `- ${q.text}`).join("\n") || "- nothing"}\n\nWrite up to 3 NEW questions specific to this request that are not already asked.`;
   const out = await localJson<{ questions?: { question?: string; options?: string[] }[] }>(model, system, prompt, Q_SCHEMA);
   const qs: IntakeQuestion[] = [];
   for (const [i, x] of (out.questions ?? []).entries()) {
@@ -88,7 +88,7 @@ export async function modelQuestions(model: string, goal: string, existing: Inta
     const options = (x.options ?? []).map((o) => String(o).trim().slice(0, 60)).filter(Boolean).slice(0, 4);
     if (text.length < 8 || options.length < 2) continue;
     if ([...existing, ...qs].some((e) => overlap(e.text, text) > 0.5)) continue;
-    qs.push({ id: `m${i}`, slot: "features", text: text.endsWith("?") ? text : `${text}?`, why: `Asked by ${model} on this machine`, options, multi: false, freeText: true, source: "local-model" });
+    qs.push({ id: `m${i}-${Math.random().toString(36).slice(2, 8)}`, slot: "features", text: text.endsWith("?") ? text : `${text}?`, why: `Asked by ${model} on this machine`, options, multi: false, freeText: true, source: "local-model" });
     if (qs.length >= 3) break;
   }
   return qs;

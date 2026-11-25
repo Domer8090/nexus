@@ -3,6 +3,7 @@ import { z } from "zod";
 import { bad, body } from "@/lib/api";
 import { audit } from "@/runtime/audit";
 import { getSettings, saveSettings } from "@/runtime/settings";
+import { DETAILS, GOALS, LEVELS, UI_MODES } from "@/lib/modes";
 import { CONCISE_MODES, PREFERENCES } from "@/lib/types";
 
 export async function GET() {
@@ -22,7 +23,10 @@ const schema = z
     projectMap: z.boolean(),
     leanContext: z.boolean(),
     keepAwake: z.boolean(),
-    advancedMode: z.boolean(),
+    mode: z.enum(UI_MODES),
+    onboarded: z.boolean(),
+    profile: z.object({ level: z.enum(LEVELS), goal: z.enum(GOALS), detail: z.enum(DETAILS) }),
+    toured: z.array(z.enum(UI_MODES)).max(3),
     backupNetwork: z
       .string()
       .trim()

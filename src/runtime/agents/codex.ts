@@ -1,3 +1,4 @@
+import { isTestCommand } from "@/lib/test-command";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -153,15 +154,19 @@ export const codexAdapter: AgentAdapter = {
         threadId = o.thread_id;
         sink.setNativeId(o.thread_id);
         sink.emit("status", "Codex session ready");
+      } else if (o.item?.type === "todo_list" && Array.isArray(o.item.items)) {
+        const items = o.item.items as { text?: string; completed?: boolean }[];
+        const at = items.findIndex((x) => !x.completed);
+        sink.emit("status", "Updated its plan", { plan: items.map((x, i) => ({ text: String(x.text ?? "").slice(0, 120), status: x.completed ? "done" : i === at ? "active" : "todo" })) });
       } else if (o.type === "item.started" && o.item?.type === "command_execution") {
-        sink.emit("tool", `Shell: ${short(bareCommand(String(o.item.command ?? "")), 160)}`, { tool: "shell" });
+        sink.emit("tool", `Shell: ${short(bareCommand(String(o.item.command ?? "")), 160)}`, { tool: "shell", id: o.item.id, test: isTestCommand(bareCommand(String(o.item.command ?? ""))) });
       } else if (o.type === "item.completed" && o.item) {
         const it = o.item;
         if (it.type === "agent_message" && typeof it.text === "string") {
           lastMessage = it.text;
           sink.emit("text", `${it.text}\n\n`);
         } else if (it.type === "command_execution" && typeof it.exit_code === "number" && it.exit_code !== 0) {
-          sink.emit("tool-result", `Command exited ${it.exit_code}: ${short(String(it.aggregated_output ?? ""), 300)}`, { error: true });
+          sink.emit("tool-result", `Command exited ${it.exit_code}: ${short(String(it.aggregated_output ?? ""), 300)}`, { error: true, id: it.id });
         } else if (it.type === "file_change" && Array.isArray(it.changes)) {
           for (const c of it.changes as { path?: string; kind?: string }[]) if (c.path) sink.emit("file", c.path, { tool: c.kind ?? "edit" });
         } else if (it.type === "error" && typeof it.message === "string") {

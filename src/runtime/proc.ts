@@ -12,7 +12,7 @@ import { redact } from "./redact";
  *   agent uses its own sign-in (Nexus never falls back to API keys).
  */
 
-export const ALLOWED = ["claude", "ollama", "git", "node", "codex", "gemini", "opencode", "jcode", "aider", "lms", "osascript", "npm", "open", "caffeinate", "networksetup", "pmset", "ps"] as const;
+export const ALLOWED = ["claude", "ollama", "git", "node", "codex", "gemini", "opencode", "jcode", "aider", "lms", "osascript", "npm", "open", "caffeinate", "networksetup", "pmset", "ps", "screencapture"] as const;
 export type AllowedExe = (typeof ALLOWED)[number];
 
 const STRIP_ENV = [
@@ -22,6 +22,14 @@ const STRIP_ENV = [
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "GOOGLE_GENAI_USE_VERTEXAI",
+  // Nexus's own optional key: never handed to an agent or a project script.
+  "BACKBOARD_API_KEY",
+  // Nexus's own server settings: an agent's npm install or dev server must not inherit them.
+  "NODE_ENV",
+  "PORT",
+  "HOSTNAME",
+  "__NEXT_PRIVATE_STANDALONE_CONFIG",
+  "__NEXT_PRIVATE_ORIGIN",
 ];
 
 function searchPath() {
@@ -66,11 +74,11 @@ export function commandPreview(exe: string, args: string[]) {
 export type RunResult = { code: number | null; stdout: string; stderr: string; timedOut: boolean };
 
 /** Short command with a timeout. Output capped at 2 MB. */
-export function run(exe: AllowedExe, args: string[], opts: { cwd?: string; timeoutMs?: number; input?: string; maxBytes?: number } = {}): Promise<RunResult> {
+export function run(exe: AllowedExe, args: string[], opts: { cwd?: string; timeoutMs?: number; input?: string; maxBytes?: number; env?: Record<string, string> } = {}): Promise<RunResult> {
   const bin = which(exe);
   if (!bin) return Promise.resolve({ code: 127, stdout: "", stderr: `${exe} not found`, timedOut: false });
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd: opts.cwd, env: agentEnv(), stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"], shell: false });
+    const child = spawn(bin, args, { cwd: opts.cwd, env: { ...agentEnv(), ...opts.env }, stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"], shell: false });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api, usePref } from "@/lib/client";
-import type { AgentStatus, Project } from "@/lib/types";
+import type { AgentStatus, Project, Settings } from "@/lib/types";
 
 type Ctx = {
   projects: Project[];
@@ -13,6 +13,9 @@ type Ctx = {
   agentsLoading: boolean;
   agentsError: string | null;
   reloadAgents: (force?: boolean) => Promise<void>;
+  settings: Settings | null;
+  patchSettings: (p: Partial<Settings>) => Promise<void>;
+  reloadSettings: () => Promise<void>;
   contextOpen: boolean;
   setContextOpen: (v: boolean) => void;
 };
@@ -34,6 +37,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const reloadSettings = useCallback(async () => {
+    try {
+      setSettings((await api<{ settings: Settings }>("/api/settings")).settings);
+    } catch {}
+  }, []);
+  const patchSettings = useCallback(async (p: Partial<Settings>) => {
+    setSettings((await api<{ settings: Settings }>("/api/settings", { method: "PATCH", body: p })).settings);
+  }, []);
+
   const reloadAgents = useCallback(async (force = false) => {
     setAgentsLoading(true);
     try {
@@ -51,13 +64,17 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reloadProjects();
     reloadAgents();
-  }, [reloadProjects, reloadAgents]);
+    reloadSettings();
+    // The server ends a hackathon when its clock runs out; notice without a reload.
+    const t = window.setInterval(reloadSettings, 20_000);
+    return () => window.clearInterval(t);
+  }, [reloadProjects, reloadAgents, reloadSettings]);
 
   const project = useMemo(() => projects.find((p) => p.id === projectId) ?? projects[0] ?? null, [projects, projectId]);
 
   return (
     <C.Provider
-      value={{ projects, project, setProjectId: setProjectIdPref, reloadProjects, agents, agentsLoading, agentsError, reloadAgents, contextOpen, setContextOpen }}
+      value={{ projects, project, setProjectId: setProjectIdPref, reloadProjects, agents, agentsLoading, agentsError, reloadAgents, settings, patchSettings, reloadSettings, contextOpen, setContextOpen }}
     >
       {children}
     </C.Provider>

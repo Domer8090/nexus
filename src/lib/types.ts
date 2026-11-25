@@ -1,3 +1,5 @@
+import type { Hackathon, Profile, UiMode } from "./modes";
+
 /** Types shared by the Nexus Local Runtime (server) and the UI. Client-safe: no secrets live here. */
 
 export const TASK_TYPES = ["plan", "build", "debug", "refactor", "test", "review", "document", "research"] as const;
@@ -174,6 +176,12 @@ export type Session = {
   notice?: string | null;
   /** Usage limit hit: Nexus runs this step again at this time, when the agent's limit resets. */
   retryAt?: string | null;
+  /** Messages the person sent while this step was waiting or working, not read yet. */
+  inbox?: { text: string; images: string[] }[];
+  /** The process is being stopped only so it can read the inbox and continue. */
+  steering?: boolean;
+  /** Nexus process that runs this step, so a second Nexus on this Mac leaves it alone. */
+  ownerPid?: number;
   /** The person chose to run this step even though its agent's limit is full. */
   ignoreLimit?: boolean;
   /** Files already copied into the project by a partial Apply. */
@@ -340,8 +348,13 @@ export type Settings = {
   keepAwake: boolean;
   /** Wi-Fi network to join when the connection drops during a run (for example an iPhone hotspot). */
   backupNetwork: string | null;
-  /** Show the Advanced workspace: every agent's terminal output, exact command and process tree. */
-  advancedMode: boolean;
+  mode: UiMode;
+  /** False until the first-run questions are answered or skipped. */
+  onboarded: boolean;
+  profile: Profile | null;
+  /** Modes whose spotlight tour has been shown. */
+  toured: UiMode[];
+  hackathon: Hackathon | null;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -356,5 +369,9 @@ export const DEFAULT_SETTINGS: Settings = {
   leanContext: true,
   keepAwake: true,
   backupNetwork: null,
-  advancedMode: false,
+  mode: "beginner",
+  onboarded: false,
+  profile: null,
+  toured: [],
+  hackathon: null,
 };

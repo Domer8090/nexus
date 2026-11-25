@@ -1,6 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { Composer } from "@/components/composer";
+import { usePicker } from "@/components/use-picker";
+import { Wait } from "@/components/wait";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppWindow, Bell, Copy, FileCode2, NotebookPen, Columns2, ExternalLink, Grid2x2, ImagePlus, Map as MapIcon, MessageSquarePlus, Monitor, RotateCcw, Send, Smartphone, Square, SquareTerminal, Tablet, X } from "lucide-react";
 import { api, useApi } from "@/lib/client";
@@ -244,8 +246,6 @@ function PaneInner({
   const [view, setView] = useState<"events" | "raw">("events");
   const [preview, setPreview] = useState<boolean | null>(null);
   const [device, setDevice] = useState<Device>("desktop");
-  const [command, setCommand] = useState("");
-  const [sending, setSending] = useState(false);
   const isLive = !!s && LIVE.includes(s.status);
   const app = useApi<ViewResp>(s && s.status !== "queued" ? `/api/view?session=${s.id}` : null, { interval: isLive ? 5000 : 0 });
   const appUrl = app.data?.url ?? null;
@@ -278,21 +278,6 @@ function PaneInner({
   };
 
   const copy = (text: string, ok: string) => act(() => navigator.clipboard.writeText(text), ok);
-
-  const send = async () => {
-    if (!s || !command.trim() || sending) return;
-    setSending(true);
-    try {
-      const r = await api<{ session: Session }>(`/api/sessions/${s.id}/action`, { body: { action: "revise", feedback: command.trim() } });
-      setCommand("");
-      onOpen(r.session.id);
-    } catch (e) {
-      setMsg((e as Error).message);
-      setTimeout(() => setMsg(null), 4000);
-    } finally {
-      setSending(false);
-    }
-  };
 
   if (!s)
     return (
@@ -403,10 +388,10 @@ function PaneInner({
                 {r.line}
               </div>
             ))}
-        {!lines && <p className="text-ink-3">{view === "raw" ? (s.agentId === "ollama" ? "Ollama runs as a local server, so there is no process output to show. Steps shows its stream." : "No raw output in memory. Nexus keeps it only while it runs, until it restarts.") : "No output yet."}</p>}
+        {!lines && <div className="text-ink-3">{view === "raw" ? (s.agentId === "ollama" ? "Ollama runs as a local server, so there is no process output to show. Steps shows its stream." : "No raw output in memory. Nexus keeps it only while it runs, until it restarts.") : live ? <Wait kind={s.status === "queued" ? "queue" : "open"} small className="pt-8" label={s.status === "queued" ? "Waiting for its turn" : "Opening the project"} /> : "No output yet."}</div>}
         {live && <span className="cursor-blink inline-block h-[1.05em] w-[0.55em] translate-y-[2px] bg-ink-2" aria-hidden />}
       </div>
-      {showPreview && <AppPreview view={app.data} loading={app.loading} device={device} setDevice={setDevice} onTerminal={() => act(() => api("/api/advanced/open", { body: { sessionId: s.id } }), "Opened Terminal.")} copy={copy} />}
+      {showPreview && <AppPreview scope={s.id} view={app.data} loading={app.loading} device={device} setDevice={setDevice} onTerminal={() => act(() => api("/api/advanced/open", { body: { sessionId: s.id } }), "Opened Terminal.")} copy={copy} />}
       </div>
 
       <footer className="border-t border-line px-3 py-2 font-mono text-[13px]">
@@ -493,28 +478,7 @@ function PaneInner({
           </div>
         )}
       </footer>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-        className="flex items-center gap-2 border-t border-line px-3 py-2"
-      >
-        <span className="font-mono text-[14px] text-ok" aria-hidden>
-          ❯
-        </span>
-        <input
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          disabled={live || sending}
-          aria-label={`Tell ${agentName(s.agentId)} what to change next`}
-          placeholder={live ? "Working. Stop it to change course, or wait for it to finish." : `Tell ${agentName(s.agentId)} what to change next`}
-          className="h-9 min-w-0 flex-1 bg-transparent font-mono text-[14px] text-ink placeholder:text-ink-3 focus:outline-none disabled:opacity-60"
-        />
-        <IconBtn label="Send to this agent" onClick={() => void send()}>
-          <Send size={14} />
-        </IconBtn>
-      </form>
+      <Composer key={s.id} session={s.id} live={live} compact name={agentName(s.agentId)} canPoint={showPreview && !!appUrl} onSent={(nid) => nid !== s.id && onOpen(nid)} />
       {reviewing && <ReviewChanges s={s} open onClose={() => setReviewing(false)} onChanged={() => {}} notify={(m) => { setMsg(m); setTimeout(() => setMsg(null), 4000); }} projectName={project?.name ?? "your project"} />}
     </section>
   );
@@ -524,7 +488,7 @@ function isLimit(error: string | null) {
   return !!error && /usage limit|rate[ -]?limit|hit your (?:[\w-]+ )?limit|try again (later|in|at)|resets? /i.test(error);
 }
 
-function AppPreview({ view, loading, device, setDevice, onTerminal, copy }: { view: ViewResp | null; loading: boolean; device: Device; setDevice: (d: Device) => void; onTerminal: () => void; copy: (t: string, ok: string) => void }) {
+function AppPreview({ scope, view, loading, device, setDevice, onTerminal, copy }: { scope: string; view: ViewResp | null; loading: boolean; device: Device; setDevice: (d: Device) => void; onTerminal: () => void; copy: (t: string, ok: string) => void }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
@@ -534,6 +498,7 @@ function AppPreview({ view, loading, device, setDevice, onTerminal, copy }: { vi
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  const { frame: pickFrame, on: pointing } = usePicker(view?.url ?? null, [scope]);
   const d = DEVICES[device];
   const scale = d.w ? Math.min(1, (size.w - 24) / d.w, (size.h - 24) / d.h) : 1;
   return (
@@ -547,7 +512,7 @@ function AppPreview({ view, loading, device, setDevice, onTerminal, copy }: { vi
             </IconBtn>
           );
         })}
-        <span className="ml-1 min-w-0 flex-1 truncate text-ink-3">{view?.url ? view.entry : view?.framework ?? "App preview"}</span>
+        <span className="ml-1 min-w-0 flex-1 truncate text-ink-3">{pointing ? "Click what you want changed" : view?.url ? view.entry : view?.framework ?? "App preview"}</span>
         {view?.url && (
           <a href={view.url} target="_blank" rel="noreferrer" aria-label="Open the app in a new tab" title="Open the app in a new tab" className="grid size-7 place-items-center rounded text-ink-3 hover:bg-[#1f1f1f] hover:text-ink">
             <ExternalLink size={14} />
@@ -558,10 +523,10 @@ function AppPreview({ view, loading, device, setDevice, onTerminal, copy }: { vi
         {view?.url ? (
           d.w ? (
             <div style={{ width: d.w * scale, height: d.h * scale }} className="overflow-hidden rounded-[22px] border-[6px] border-[#2a2a2a] bg-white shadow-[0_20px_60px_rgb(0_0_0/0.5)]">
-              <iframe key={`${view.version}-${device}`} src={view.url} title="App preview" style={{ width: d.w, height: d.h, transform: `scale(${scale})`, transformOrigin: "0 0" }} className="bg-white" />
+              <iframe ref={pickFrame} key={`${view.version}-${device}`} src={view.url} title="App preview" style={{ width: d.w, height: d.h, transform: `scale(${scale})`, transformOrigin: "0 0" }} className="bg-white" />
             </div>
           ) : (
-            <iframe key={view.version} src={view.url} title="App preview" className="absolute inset-0 h-full w-full bg-white" />
+            <iframe ref={pickFrame} key={view.version} src={view.url} title="App preview" className="absolute inset-0 h-full w-full bg-white" />
           )
         ) : view?.devCommand ? (
           <div className="max-w-sm p-4 text-center text-[14px] text-ink-2">
@@ -674,6 +639,7 @@ function AskAgents({ projectId, onStarted, target }: { projectId: string | null;
       <button
         type="button"
         onClick={() => setOpen(true)}
+        data-tour="ask"
         title="Ask the agents to add something (Cmd+K)"
         className="btn-step m-2 inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-white px-4 text-[15px] font-semibold text-black hover:bg-[#e8e8e8]"
       >
@@ -861,7 +827,7 @@ export function AdvancedView() {
 
   return (
     <div className="force-dark -mx-3 -mt-5 -mb-24 flex h-[calc(100dvh-52px)] min-h-[520px] bg-canvas text-ink sm:-mx-4 lg:-mx-6">
-      <aside aria-label="Sessions" className="flex w-72 shrink-0 flex-col border-r border-line">
+      <aside data-tour="sessions" aria-label="Sessions" className="flex w-72 shrink-0 flex-col border-r border-line">
         <div className="p-2">
           <input
             value={filter}
@@ -943,7 +909,7 @@ export function AdvancedView() {
               aria-pressed={logs.notify}
               title="Desktop notification when a session finishes or fails"
               onClick={async () => {
-                if (typeof Notification === "undefined") return;
+                if (typeof Notification === "undefined") return window.alert("This window can't send notifications. Open Nexus in a browser to use them.");
                 if (!logs.notify && Notification.permission !== "granted") await Notification.requestPermission();
                 logs.setNotify(!logs.notify && Notification.permission === "granted");
               }}
@@ -951,9 +917,6 @@ export function AdvancedView() {
             >
               <Bell size={15} aria-hidden /> {logs.notify ? "Notifying" : "Notify me"}
             </button>
-            <Link href="/runs" className="ml-1 inline-flex h-8 items-center rounded px-2 text-[14px] text-ink-3 hover:text-ink">
-              Simple view
-            </Link>
           </div>
         </div>
         {mode === "map" && (
@@ -961,7 +924,7 @@ export function AdvancedView() {
             <ConceptMap projectId={project?.id ?? null} agentName={agentName} />
           </div>
         )}
-        <div className={cx("grid min-h-0 flex-1 gap-2 p-2", mode === "map" && "hidden", count === 1 ? "grid-cols-1" : count === 2 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-2 md:grid-rows-2")}>
+        <div data-tour="panes" className={cx("grid min-h-0 flex-1 gap-2 p-2", mode === "map" && "hidden", count === 1 ? "grid-cols-1" : count === 2 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-2 md:grid-rows-2")}>
           {panes.slice(0, count).map((id, i) => {
             const s = id ? byId.get(id) ?? null : null;
             return (

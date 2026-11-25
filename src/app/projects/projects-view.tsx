@@ -1,5 +1,6 @@
 "use client";
 
+import { Wait } from "@/components/wait";
 import { useState } from "react";
 import { FileText, FolderGit2, FolderOpen, GitBranch, Trash2 } from "lucide-react";
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, PageHeader, Spinner, Toast, cx } from "@/components/ui";
@@ -22,7 +23,7 @@ function MapDialog({ p, open, onClose }: { p: Project; open: boolean; onClose: (
         One file that lists every source file with its line count and the names it defines. Agents read it once instead of listing folders and opening files to find their way. Nexus already writes it into every session&apos;s worktree; write it here to use it in your own Claude Code or Codex sessions.
       </p>
       {!m.data ? (
-        <Spinner />
+        <Wait kind="list" className="py-16" label="Loading projects" />
       ) : (
         <>
           <p className="mt-2 font-mono text-[12px] text-ink-3">

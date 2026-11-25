@@ -4,7 +4,7 @@ import { localModels, modelQuestions, pickLight } from "@/runtime/intake";
 
 const schema = z.object({
   goal: z.string().trim().min(1).max(8000),
-  existing: z.array(z.object({ text: z.string().max(300) }).passthrough()).max(12).default([]),
+  existing: z.array(z.object({ text: z.string().max(300) }).passthrough()).max(30).default([]),
 });
 
 /** Extra, goal-specific questions from the light local model on Ollama. */

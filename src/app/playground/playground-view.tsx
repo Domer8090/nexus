@@ -1,5 +1,6 @@
 "use client";
 
+import { Wait } from "@/components/wait";
 import { Picker } from "@/components/picker";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,6 +11,8 @@ import { Button, ConfirmDialog, Segmented, Spinner, cx, inputClass } from "@/com
 import { useWorkspace } from "@/components/workspace-context";
 import { api, useApi } from "@/lib/client";
 import { type Domain, type IntakeAnalysis, type IntakeQuestion } from "@/lib/intake";
+import { useAttachments } from "@/components/composer";
+import { sameQuestion } from "@/lib/ask-types";
 import { lineDiff } from "@/lib/optimizer";
 import { bestModel } from "@/lib/model-pick";
 import { tidyPath } from "@/lib/format";
@@ -139,10 +142,10 @@ function QuestionStep({ q, value, onChange, onPicked }: { q: IntakeQuestion; val
   };
   return (
     <div className="flex flex-col">
-      <h2 className="font-display text-[26px] leading-[1.15] text-ink sm:text-[34px]">{q.text}</h2>
+      <h2 className="font-display text-[22px] leading-[1.2] text-ink">{q.text}</h2>
       {q.multi && <p className="mt-2 text-[15px] text-ink-2">Pick any that fit.</p>}
       {q.options.length > 0 && (
-        <div className="mt-8 grid gap-2.5 sm:grid-cols-2" role="group" aria-label={q.text}>
+        <div className="mt-5 grid gap-2" role="group" aria-label={q.text}>
           {q.options.map((o) => {
             const on = picked.includes(o);
             return (
@@ -152,7 +155,7 @@ function QuestionStep({ q, value, onChange, onPicked }: { q: IntakeQuestion; val
                 aria-pressed={on}
                 onClick={() => toggle(o)}
                 className={cx(
-                  "btn-step flex min-h-14 items-center gap-3 rounded-[var(--radius-control)] border px-4 py-3 text-left text-[16px] transition-colors",
+                  "btn-step flex min-h-11 items-center gap-3 rounded-[var(--radius-control)] border px-3 py-2 text-left text-[14px] transition-colors",
                   on ? "border-ink bg-ink text-canvas" : "border-line text-ink hover:border-line-strong hover:bg-surface-2",
                 )}
               >
@@ -312,17 +315,19 @@ export function PlaygroundView() {
     global: InstalledSkill[];
   }>(project ? `/api/skills/installed?projectId=${project.id}` : "/api/skills/installed");
 
+  const pics = useAttachments();
   const [goal, setGoal] = useState("");
   const [intake, setIntake] = useState<IntakeResp | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [questions, setQuestions] = useState<IntakeQuestion[]>([]);
-  const [, setModelQs] = useState<"idle" | "loading" | "done" | "failed">("idle");
+  const [modelQs, setModelQs] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   // Which step is on screen. One step at a time; the stepper moves between the ones already reached.
   const [view, setView] = useState<View>("idea");
   const [analyzedGoal, setAnalyzedGoal] = useState("");
+  const [rounds, setRounds] = useState(0);
   const [qPage, setQPage] = useState(0);
 
   const [brief, setBrief] = useState<Brief | null>(null);
@@ -376,6 +381,7 @@ export function PlaygroundView() {
       setEdited(false);
       setTasks([]);
       setAnswers({});
+      setRounds(0);
       try {
         const r = await api<IntakeResp>("/api/intake", {
           body: { goal: text, projectId },
@@ -408,6 +414,23 @@ export function PlaygroundView() {
     },
     [projectId],
   );
+
+  // While questions are answered, the local model prepares the next ones, up to three rounds.
+  const prefetch = stage >= 2;
+  const unanswered = questions.length - Math.min(qPage + 1, questions.length);
+  useEffect(() => {
+    if (view !== "questions" || !intake?.local.model || modelQs === "loading" || modelQs === "failed" || rounds >= 2 || unanswered > 2) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRounds((r) => r + 1);
+    setModelQs("loading");
+    const said = answeredDecisions.map((d) => `${d.q} ${d.a}`).join("\n");
+    api<{ questions: IntakeQuestion[]; error?: string }>("/api/intake/questions", { body: { goal: `${goal}${said ? `\n\nAlready decided:\n${said}` : ""}`.slice(0, 8000), existing: questions.map((q) => ({ text: q.text })).slice(-30) } })
+      .then((m) => {
+        setQuestions((cur) => [...cur, ...m.questions.filter((x) => !cur.some((c) => sameQuestion(c.text, x.text)))]);
+        setModelQs(m.error ? "failed" : "done");
+      })
+      .catch(() => setModelQs("failed"));
+  }, [view, intake, modelQs, unanswered, rounds, goal, questions, answeredDecisions]);
 
   // Arriving from Home with a goal starts the flow right away. Next.js keeps this page mounted
   // (hidden with <Activity>) between visits, so this runs on every reveal, not only on first mount;
@@ -509,7 +532,7 @@ export function PlaygroundView() {
   // Team plan.
   const defModel = useCallback((a: AgentStatus, role: SessionRole = "build") => bestModel(a, role, { claudeModel: settings.data?.settings.claudeModel, codexModel: settings.data?.settings.codexModel }), [settings.data]);
   useEffect(() => {
-    if (stage !== 3 || !briefText) return;
+    if (stage < 2 || !briefText) return;
     const ctrl = new AbortController();
     if (preset === "swarm") {
       api<{ steps: Omit<Task, "key">[]; notes: string[] }>("/api/swarm", {
@@ -532,7 +555,7 @@ export function PlaygroundView() {
 
   // Skills that fit, from the recommender.
   useEffect(() => {
-    if (stage !== 3 || !brief) return;
+    if (stage < 2 || !brief) return;
     const ctrl = new AbortController();
     api<Recommendation>("/api/recommend", {
       body: {
@@ -554,9 +577,9 @@ export function PlaygroundView() {
 
   // The light local model picks installed skills that fit (keyword ranking first, so it only chooses among close matches).
   useEffect(() => {
-    if (stage !== 3 || !goal.trim()) return;
+    if (!prefetch || !analyzedGoal) return;
     const ctrl = new AbortController();
-    const task = [goal, ...answeredDecisions.map((d) => `${d.q} ${d.a}`)].join("\n");
+    const task = analyzedGoal;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPicks({ state: "loading", picks: [] });
     api<{ picks: { name: string; why: string }[]; engine: string; installed: number; error?: string }>("/api/skills/pick", { body: { task, projectId: project?.id ?? null }, signal: ctrl.signal })
@@ -567,7 +590,7 @@ export function PlaygroundView() {
       .catch(() => setPicks({ state: "done", picks: [], error: "Skill picking failed." }));
     return () => ctrl.abort();
      
-  }, [stage, goal, answeredDecisions, project?.id]);
+  }, [prefetch, analyzedGoal, project?.id]);
 
   // Exact commands, for approval.
   useEffect(() => {
@@ -608,6 +631,7 @@ export function PlaygroundView() {
           preset,
           goal,
           brief: briefText,
+          images: pics.images,
           skills,
           concise,
           permissions: perm,
@@ -674,6 +698,7 @@ export function PlaygroundView() {
           </label>
           <textarea
             id="pg-goal"
+            onPaste={pics.drop.onPaste}
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             onKeyDown={(e) => {
@@ -683,6 +708,12 @@ export function PlaygroundView() {
             className={cx(inputClass, "min-h-48 flex-1 resize-none p-5 text-[20px] leading-relaxed")}
             aria-invalid={!!intakeError}
           />
+          <div className="mt-3 flex flex-wrap items-center gap-2" {...pics.drop}>
+            {pics.ui}
+            {pics.buttons}
+            {pics.thumbs}
+            {pics.error && <span className="text-[13px] text-bad">{pics.error}</span>}
+          </div>
           {intakeError && (
             <p role="alert" className="mt-3 text-[15px] text-bad">
               {intakeError}
@@ -692,10 +723,25 @@ export function PlaygroundView() {
       )}
 
       {intake && view === "questions" && (
-        <section aria-label="Questions" className="panel rise-in flex min-h-[calc(100svh-13rem)] flex-col p-5 sm:p-10">
+        <div className="rise-in grid items-start gap-4 lg:grid-cols-[1fr_27rem]">
+        <section aria-label="Prompt so far" className="panel flex max-h-[calc(100svh-13rem)] min-h-64 flex-col p-5 max-lg:order-2 sm:p-8">
+          <h2 className="font-display mb-4 text-[26px] leading-tight text-ink">Your prompt so far</h2>
+          {briefText ? (
+            <pre className="min-h-0 flex-1 overflow-y-auto font-mono text-[13px] leading-relaxed whitespace-pre-wrap text-ink-2" aria-live="off">
+              {briefText}
+            </pre>
+          ) : (
+            <Wait kind="write" className="my-auto" label="Writing the first draft" />
+          )}
+        </section>
+        <section aria-label="Questions" className="panel flex min-h-[calc(100svh-13rem)] flex-col p-5">
+          <h2 className="mb-4 flex items-center gap-2 text-[16px] text-ink">
+            <HelpCircle size={18} aria-hidden /> Nexus has a few questions
+            {modelQs === "loading" && <span className="ml-auto text-[12px] text-ink-3">Thinking of more…</span>}
+          </h2>
           <LocalModelBanner local={intake.local} onPulled={() => analyze(goal)} />
           {questions.length > 0 && (
-            <div className="mb-10 flex items-center gap-3" aria-label={`Question ${Math.min(qPage, questions.length - 1) + 1} of ${questions.length}`}>
+            <div className="mb-5 flex items-center gap-3" aria-label={`Question ${Math.min(qPage, questions.length - 1) + 1} of ${questions.length}`}>
               <ol className="flex flex-1 gap-1" aria-hidden>
                 {questions.map((q, i) => (
                   <li key={q.id} className="flex-1">
@@ -714,10 +760,10 @@ export function PlaygroundView() {
                 const i = Math.min(qPage, questions.length - 1);
                 const q = questions[i];
                 const last = i === questions.length - 1;
-                return <QuestionStep key={q.id} q={q} value={answers[q.id] ?? ""} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} onPicked={() => (last ? undefined : setQPage(i + 1))} />;
+                return <QuestionStep key={q.id} q={q} value={answers[q.id] ?? ""} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} onPicked={() => (last ? (modelQs === "loading" ? undefined : stage === 3 ? setView("prompt") : toTeam()) : setQPage(i + 1))} />;
               })()
             ) : (
-              <h2 className="font-display text-[26px] leading-[1.15] text-ink sm:text-[34px]">Your idea already covers the basics.</h2>
+              <h2 className="font-display text-[22px] leading-[1.2] text-ink">Your idea already covers the basics.</h2>
             )}
           </div>
           {(() => {
@@ -725,7 +771,7 @@ export function PlaygroundView() {
             const last = i >= questions.length - 1;
             const finish = stage === 3 ? () => setView("prompt") : toTeam;
             return (
-              <div className="mt-10 flex flex-wrap items-center gap-2">
+              <div className="mt-6 flex flex-wrap items-center gap-2">
                 {i > 0 && (
                   <Button size="lg" onClick={() => setQPage(i - 1)}>
                     <ArrowLeft size={16} aria-hidden /> Back
@@ -749,6 +795,7 @@ export function PlaygroundView() {
             );
           })()}
         </section>
+        </div>
       )}
 
       {intake && view === "prompt" && brief && (
@@ -857,7 +904,7 @@ export function PlaygroundView() {
           )}
           {agentsLoading && !tasks.length && (
             <p className="flex items-center gap-2 text-[15px] text-ink-2">
-              <Spinner size={14} /> Checking which agents are ready
+              <Wait kind="agents" label="Checking which agents are ready" />
             </p>
           )}
           <ol className="grid flex-1 auto-rows-fr divide-y divide-line rounded-[var(--radius-control)] border border-line" aria-label="Jobs">

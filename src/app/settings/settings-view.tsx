@@ -7,6 +7,7 @@ import { Button, Dialog, Field, PageHeader, Segmented, Spinner, Toast, cx, input
 import { useTheme, type ThemePref } from "@/components/theme-sync";
 import { useWorkspace } from "@/components/workspace-context";
 import { api, useApi } from "@/lib/client";
+import { MODE_INFO, UI_MODES } from "@/lib/modes";
 import { CONCISE_LABELS, PREFERENCE_LABELS, type ConciseMode, type PermissionSet, type Preference, type Settings } from "@/lib/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -78,7 +79,7 @@ export function SettingsView() {
   const s = useApi<{ settings: Settings }>("/api/settings");
   const sys = useApi<{ os: string; shell: string; node: string; git: string | null; dataDir: string; cpus: number; memoryGb: number; bind: string }>("/api/system");
   const audit = useApi<{ entries: { id: number; at: string; action: string; detail: string }[] }>("/api/audit");
-  const { agents } = useWorkspace();
+  const { agents, settings, patchSettings } = useWorkspace();
   const [theme, setTheme] = useTheme();
   const [toast, setToast] = useState<string | null>(null);
   const [reset, setReset] = useState(false);
@@ -99,11 +100,20 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      <PageHeader title="Settings" pixel="Settings" heading="Settings on this computer" sub="Kept in SQLite in ~/.nexus. Nexus stores no API keys or sign-in tokens." />
+      <PageHeader title="Settings" pixel="Settings" heading="Settings on this computer" sub="Kept in SQLite in ~/.nexus. API keys and sign-in tokens are never stored there." />
       {!st ? (
         <Spinner />
       ) : (
         <>
+          <Section title="Mode">
+            <Segmented label="Mode" value={settings?.mode ?? "beginner"} onChange={(mode) => patchSettings({ mode }).catch((e: Error) => setToast(e.message))} options={UI_MODES.map((m) => ({ value: m, label: MODE_INFO[m].label }))} />
+            <p className="text-[13px] text-ink-2">{MODE_INFO[settings?.mode ?? "beginner"].body}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => patchSettings({ onboarded: false }).catch((e: Error) => setToast(e.message))}>Answer the first questions again</Button>
+              <Button onClick={() => patchSettings({ toured: [] }).then(() => setToast("The tour opens on Home.")).catch((e: Error) => setToast(e.message))}>Show tours again</Button>
+            </div>
+          </Section>
+
           <Section title="Runtime">
             <Field label={`Parallel sessions: ${st.concurrency}`} htmlFor="conc" hint="Extra sessions wait in a queue. Each agent session uses CPU and memory on this machine.">
               <input id="conc" type="range" min={1} max={8} value={st.concurrency} onChange={(e) => patch({ concurrency: Number(e.target.value) })} className="accent-[var(--accent)]" />

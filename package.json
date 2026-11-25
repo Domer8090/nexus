@@ -9,6 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "dmg": "bash desktop/build.sh",
     "app": "next build && next start -H 127.0.0.1 -p 3000"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
-import { HomeView } from "./home-view";
+import { ModeHome } from "./mode-home";
 
 export default function Page() {
-  return <HomeView />;
+  return <ModeHome />;
 }

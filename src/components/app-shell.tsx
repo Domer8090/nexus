@@ -5,14 +5,19 @@ import { FolderPicker } from "./folder-picker";
 import { tidyPath } from "@/lib/format";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Blocks, Bot, FolderGit2, LayoutDashboard, Menu, PanelLeft, PanelRight, Play, Plug, Plus, Settings, Sparkles, SquareTerminal, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Blocks, Bot, CircleHelp, FolderGit2, LayoutDashboard, Menu, PanelLeft, PanelRight, Play, Plug, Plus, Settings, Sparkles, SquareTerminal, X } from "lucide-react";
 import { NexusMark } from "./logo";
 import { ContextPanel } from "./context-panel";
-import { Button, cx } from "./ui";
+import { Button, Toast, cx } from "./ui";
 import { useWorkspace } from "./workspace-context";
-import { api, useApi } from "@/lib/client";
-import type { Session, Settings as NexusSettings } from "@/lib/types";
+import { LiveChip } from "./build-live";
+import { Onboarding } from "./onboarding";
+import { QuestionDock } from "./question-dock";
+import { Tour } from "./tour";
+import { MODE_INFO, UI_MODES, allowedIn, modeHome, type UiMode } from "@/lib/modes";
+import { useApi } from "@/lib/client";
+import type { Session } from "@/lib/types";
 
 const NAV = [
   { href: "/", label: "Home", icon: LayoutDashboard },
@@ -39,6 +44,16 @@ const TITLES: [RegExp, string][] = [
 ];
 
 const ADVANCED = { href: "/advanced", label: "Advanced", icon: SquareTerminal };
+
+const pick = (href: string, label?: string) => {
+  const n = NAV.find((x) => x.href === href)!;
+  return label ? { ...n, label } : n;
+};
+const NAVS: Record<UiMode, typeof NAV> = {
+  beginner: NAV,
+  advanced: [ADVANCED, pick("/agents"), pick("/skills"), pick("/projects"), pick("/integrations"), pick("/settings")],
+  hackathon: [pick("/", "Hackathon"), pick("/runs"), pick("/skills"), pick("/agents"), pick("/settings")],
+};
 
 function ProjectSwitcher() {
   const { projects, project, setProjectId, reloadProjects } = useWorkspace();
@@ -80,9 +95,9 @@ function ProjectSwitcher() {
   );
 }
 
-function NavList({ onNavigate, running, advanced }: { onNavigate?: () => void; running: number; advanced: boolean }) {
+function NavList({ onNavigate, running, mode }: { onNavigate?: () => void; running: number; mode: UiMode }) {
   const pathname = usePathname();
-  const items = advanced ? [...NAV.slice(0, 6), ADVANCED, ...NAV.slice(6)] : NAV;
+  const items = NAVS[mode];
   return (
     <ul className="flex flex-col gap-px">
       {items.map(({ href, label, icon: Icon }) => {
@@ -141,26 +156,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return !h;
     });
   };
-  const { contextOpen, setContextOpen } = useWorkspace();
+  const { contextOpen, setContextOpen, settings, patchSettings } = useWorkspace();
   const title = TITLES.find(([re]) => re.test(pathname))?.[1] ?? "Nexus";
   const { data } = useApi<{ running: number; sessions: Session[] }>("/api/sessions", { interval: 4000 });
   const running = data?.sessions.filter((s) => s.status === "running" || s.status === "starting").length ?? 0;
+  const runningNow = data?.sessions.filter((s) => s.status === "running") ?? [];
   const router = useRouter();
-  const settings = useApi<{ settings: NexusSettings }>("/api/settings");
-  const [advanced, setAdvanced] = useState<boolean | null>(null);
-  const advOn = advanced ?? settings.data?.settings.advancedMode ?? false;
-  const toggleAdvanced = async () => {
-    const next = !advOn;
-    setAdvanced(next);
+  const [tour, setTour] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const mode = settings?.mode ?? "beginner";
+  const allowed = !!settings && allowedIn(mode, pathname);
+  // Also moves the person on when a hackathon ends by itself.
+  useEffect(() => {
+    if (settings && !allowed) router.replace(modeHome(mode));
+  }, [settings, allowed, mode, router]);
+  const changeMode = async (m: UiMode) => {
     try {
-      await api("/api/settings", { method: "PATCH", body: { advancedMode: next } });
-    } catch {
-      setAdvanced(!next);
-      return;
+      await patchSettings({ mode: m });
+      router.push(modeHome(m));
+    } catch (e) {
+      setToast((e as Error).message);
+      window.setTimeout(() => setToast(null), 4000);
     }
-    if (next) router.push("/advanced");
-    else if (pathname.startsWith("/advanced")) router.push("/runs");
   };
+  const closeTour = useCallback(() => {
+    setTour(false);
+    if (settings && !settings.toured.includes(settings.mode)) void patchSettings({ toured: [...settings.toured, settings.mode] }).catch(() => {});
+  }, [settings, patchSettings]);
+  const startTour = () => {
+    if (pathname !== modeHome(mode)) router.push(modeHome(mode));
+    setTour(true);
+  };
+  // First visit to a mode's home shows its tour once.
+  const firstTour = !!settings?.onboarded && !settings.toured.includes(settings.mode) && pathname === modeHome(mode) && (settings.mode !== "hackathon" || (!!settings.hackathon && !settings.hackathon.endedAt));
 
   useEffect(() => {
     if (!drawer) return;
@@ -171,15 +199,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const side = (onNavigate?: () => void) => (
     <>
-      <Link href="/" onClick={onNavigate} className="mb-5 flex items-center gap-2.5 px-1.5">
+      <Link href={modeHome(mode)} onClick={onNavigate} className="mb-5 flex items-center gap-2.5 px-1.5">
         <NexusMark className="size-6" />
         <span className="font-mono text-[15px] font-medium tracking-[0.04em]">NEXUS</span>
       </Link>
-      <div className="mb-4">
-        <ProjectSwitcher />
-      </div>
-      <nav aria-label="Main">
-        <NavList onNavigate={onNavigate} running={running} advanced={advOn} />
+      {settings && mode !== "hackathon" && (
+        <div className="mb-4" data-tour="workspace">
+          <ProjectSwitcher />
+        </div>
+      )}
+      <nav aria-label="Main" data-tour="nav">
+        {settings && <NavList onNavigate={onNavigate} running={running} mode={mode} />}
       </nav>
       <div className="mt-auto pt-4">
         <RuntimeStatus />
@@ -220,20 +250,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </span>
           <h1 className="truncate font-mono text-[13px] font-medium tracking-[0.02em]">{title}</h1>
           <div className="ml-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={advOn}
-              onClick={toggleAdvanced}
-              title="Advanced mode: every agent's terminal, exact command and processes"
-              className="inline-flex h-8 items-center gap-2 rounded-[var(--radius-control)] px-2 font-mono text-[11.5px] tracking-[0.04em] text-ink-2 hover:text-ink"
-            >
-              <span className={cx("relative inline-block h-4 w-7 rounded-full transition-colors", advOn ? "bg-ok" : "bg-line-strong")} aria-hidden>
-                <span className={cx("absolute top-0.5 size-3 rounded-full bg-canvas transition-[left]", advOn ? "left-3.5" : "left-0.5")} />
-              </span>
-              Advanced
-            </button>
-            <Link
+            {runningNow[0] && <LiveChip key={runningNow[0].id} session={runningNow[0]} />}
+            <div data-tour="mode" className="w-32">
+              <Picker label="Mode" size="sm" value={settings ? mode : ""} placeholder="" onChange={(m) => changeMode(m as UiMode)} options={UI_MODES.map((m) => ({ value: m, label: MODE_INFO[m].label, hint: MODE_INFO[m].body }))} />
+            </div>
+            <span data-tour="help">
+              <Button variant="ghost" size="sm" aria-label="Show the tour" title="Show the tour" onClick={startTour}>
+                <CircleHelp size={17} />
+              </Button>
+            </span>
+            {settings && mode === "beginner" && <Link
               href="/playground"
               onClick={() => {
                 try {
@@ -244,9 +270,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }}
               className="btn-step inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border border-accent bg-accent px-3 font-mono text-[11.5px] font-semibold tracking-[0.06em] text-accent-ink hover:bg-accent-hover"
             >
-              <Plus size={15} aria-hidden /> New task
-            </Link>
-            <span className="hidden xl:inline-flex">
+              <Plus size={15} aria-hidden /> <span className="max-sm:sr-only">New task</span>
+            </Link>}
+            <span className={mode === "beginner" ? "hidden xl:inline-flex" : "hidden"}>
               <Button variant="ghost" size="sm" aria-pressed={contextOpen} aria-label={contextOpen ? "Hide context panel" : "Show context panel"} onClick={() => setContextOpen(!contextOpen)}>
                 <PanelRight size={17} />
               </Button>
@@ -255,15 +281,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         <div className="flex min-w-0 flex-1">
           <main id="main" className="min-w-0 flex-1 px-3 pt-5 pb-24 sm:px-4 lg:px-6">
-            {children}
+            {allowed ? children : null}
           </main>
-          {contextOpen && !pathname.startsWith("/advanced") && (
+          {settings && mode === "beginner" && contextOpen && (
             <aside aria-label="Project context" className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-80 shrink-0 overflow-y-auto border-l border-line px-4 pt-5 pb-8 xl:block">
               <ContextPanel />
             </aside>
           )}
         </div>
       </div>
+      {settings && !settings.onboarded && <Onboarding onDone={() => setTour(false)} />}
+      {settings?.onboarded && (tour || firstTour) && <Tour key={mode} mode={mode} onClose={closeTour} />}
+      {settings && pathname.startsWith("/advanced") && runningNow[0]?.workflowId && <QuestionDock key={runningNow[0].workflowId} id={runningNow[0].workflowId} kind="run" live floating />}
+      <Toast message={toast} />
     </div>
   );
 }
